@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Agentic Engineering Arena"
+version = "1.0.0"
+id = "artifacts/arena"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/", "/socket.io" ]
+localPort = 18277
+
+[services.development]
+run = "pnpm --filter @workspace/arena run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/arena", "run", "build" ]
+publicDir = "artifacts/arena/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18277"
+BASE_PATH = "/"
