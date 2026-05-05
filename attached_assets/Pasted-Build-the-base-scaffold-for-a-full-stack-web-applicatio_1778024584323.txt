@@ -1,0 +1,166 @@
+Build the base scaffold for a full-stack web application called the 
+"Agentic Engineering Arena." This is an evolutionary multi-agent AI 
+orchestration platform for a VC demo. Do not build placeholder lorem ipsum 
+content — every component should be structurally real and wired together, 
+even if agent logic is stubbed.
+
+## Project structure to create:
+
+/
+├── backend/
+│   ├── main.py              # FastAPI app + Socket.io mount
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── orchestrator.py  # LangGraph StateGraph definition
+│   │   ├── scenario_agents.py  # Supply chain, disaster relief, peer agents
+│   │   ├── evolutionary_engine.py  # Fitness fn, mutation, crossover logic
+│   │   └── evaluator.py     # CLEAR framework scoring
+│   ├── game_envs/
+│   │   ├── supply_chain.py  # Grid state logic for supply chain scenario
+│   │   ├── disaster_relief.py
+│   │   └── peer_agents.py
+│   ├── state/
+│   │   ├── redis_client.py  # Redis connection + snapshot helpers
+│   │   └── db.py            # SQLite models: workflows, generations, traces
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx          # Root layout: left game panel, right DAG panel
+│   │   ├── components/
+│   │   │   ├── GameViewport.jsx     # Canvas game renderer (Phaser or plain canvas)
+│   │   │   ├── DAGVisualizer.jsx    # React Flow DAG with live node/edge updates
+│   │   │   ├── EvoDashboard.jsx     # Recharts scatter: generation vs fitness
+│   │   │   ├── TracePanel.jsx       # Streaming agent thought logs
+│   │   │   ├── HITLModal.jsx        # Human override modal triggered by backend
+│   │   │   ├── MetricsBar.jsx       # Live Cost / Latency / Pass@k gauges
+│   │   │   └── WorkflowLibrary.jsx  # Saved topologies sidebar
+│   │   ├── hooks/
+│   │   │   ├── useSocket.js   # Socket.io connection + event handlers
+│   │   │   └── useGameState.js
+│   │   └── main.jsx
+│   ├── package.json
+│   └── vite.config.js
+└── .replit                  # run = concurrent backend + frontend
+
+## Backend spec:
+
+Use Python 3.11. Install: fastapi, uvicorn, python-socketio, 
+langgraph, langchain-anthropic, anthropic, redis, sqlalchemy, 
+aiosqlite, pydantic.
+
+main.py must:
+- Mount a Socket.io ASGI app alongside FastAPI
+- Expose REST endpoints: POST /api/scenario/start, 
+  POST /api/scenario/stop, GET /api/workflows, 
+  POST /api/workflows/save, GET /api/traces/{run_id}
+- Emit these Socket.io events: "game_state_update", 
+  "dag_update", "agent_thought", "hitl_request", 
+  "fitness_update", "generation_complete"
+- Listen for: "hitl_response", "scenario_select", "start_evolution"
+
+orchestrator.py must define a LangGraph StateGraph with these nodes:
+  - "goal_intake" → parses scenario + objective
+  - "topology_init" → initializes agent graph from config
+  - "agent_step" → runs one tick of the active agent population
+  - "evaluate" → scores generation with CLEAR fitness function
+  - "mutate" → applies semantic mutation + Graph-GRPO edge pruning
+  - "hitl_gate" → conditional node that pauses if confidence < threshold
+  - "checkpoint" → serializes state to Redis
+
+evolutionary_engine.py must implement:
+  - FitnessScore = SuccessRate / (Latency * Cost)
+  - SemanticMutation(agent_config) → returns mutated config via LLM call
+  - GraphGRPOPrune(topology, edge_scores) → returns pruned adjacency list
+  - TaguchL9Sample(param_grid) → returns 9 configurations to test
+  - GenerationLog dataclass with: gen_id, parent_fitness, child_fitness, 
+    mutation_type, topology_diff, timestamp
+
+Each game environment (supply_chain.py, etc.) must implement:
+  - GridState dataclass (agents: list, resources: dict, score: float, tick: int)
+  - step(action: dict) → GridState
+  - get_objective_value() → float
+  - to_json() → dict (for Socket.io emission)
+
+## Frontend spec:
+
+Use React 18 + Vite + Tailwind CSS. Install: reactflow, socket.io-client, 
+recharts, phaser (or use HTML5 Canvas API if Phaser conflicts with Vite).
+
+Visual design: dark theme. Background #0d1117. Accent cyan #00d9ff. 
+Secondary accent amber #f59e0b. Text primary #e6edf3. 
+Card backgrounds #161b22. Border color #30363d.
+
+Layout (App.jsx):
+- Full viewport height, no scroll
+- Left 55%: Game Viewport (canvas) above, MetricsBar below
+- Right 45%: tabbed panel — tabs are "DAG", "Evolution", "Traces", "Library"
+- Top bar: scenario selector (Supply Chain | Disaster Relief | Peer Agents), 
+  Start/Stop buttons, Mode toggle (Autonomous | HITL), generation counter
+
+DAGVisualizer.jsx:
+- Use React Flow with dark theme
+- Nodes: circular, label = agent role, color = status 
+  (idle=gray, active=cyan, failed=red, evolved=amber)
+- Node size proportional to context window utilization (from socket data)
+- Edges: width proportional to message payload size
+- Red edges for negative Graph-GRPO advantage scores
+- Animate nodes with a CSS pulse when they are actively generating tokens
+- Sidebar panel on node click: shows agent system prompt, tool list, 
+  last 3 actions
+
+EvoDashboard.jsx:
+- Recharts ScatterChart: x=generation, y=fitness score
+- Two series: parent population (gray dots) and best mutant (cyan dot)
+- Line overlay showing fitness trend
+- Below chart: table of last 5 generations with columns: 
+  Gen, Best Fitness, Mutation Type, Topology Change, Cost/Task
+
+TracePanel.jsx:
+- Scrolling log of agent thoughts, streamed token by token via socket
+- Color-coded by agent role
+- Expandable rows showing full reasoning chain
+- Filter buttons: All | Orchestrator | Evaluator | Game Agents | System
+
+HITLModal.jsx:
+- Triggered when backend emits "hitl_request" event
+- Shows: current agent plan, confidence score, proposed action
+- Buttons: Approve / Override / Stop
+- Override opens text input to inject human constraint
+- 30-second countdown timer with progress ring
+
+WorkflowLibrary.jsx:
+- Left sidebar (collapsed by default, expand on click)
+- Lists saved workflows with: name, scenario, best fitness, date saved
+- "Apply to current scenario" button on each
+- "Save current" button at top
+
+## .replit config:
+
+Set run command to start both processes concurrently:
+  cd backend && uvicorn main:app --reload --port 8000 &
+  cd frontend && npm run dev -- --port 3000
+
+Set the webview port to 3000.
+
+## Wiring:
+
+In vite.config.js, proxy /api and /socket.io to localhost:8000 so 
+frontend dev server forwards to FastAPI backend.
+
+In useSocket.js, connect to "/" and handle all 6 backend events, 
+storing state in React context.
+
+Do NOT use placeholder data. Wire all components to the socket state 
+so that when the backend sends a real game_state_update, the canvas 
+re-renders. When dag_update fires, React Flow updates nodes and edges. 
+When fitness_update fires, the scatter chart appends a new data point.
+
+For the initial stub, the game environments can run deterministic 
+random agents (no LLM calls) so the full UI loop works end-to-end 
+before we add the Anthropic API. Add a comment "# STUB: replace with 
+LLM call" everywhere a real model call will go.
+
+Add ANTHROPIC_API_KEY to the environment variables — read it in 
+backend via os.environ.get("ANTHROPIC_API_KEY"). Do not hardcode keys.
+
+Start with this and confirm the project structure before writing any code.
