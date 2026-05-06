@@ -3,22 +3,39 @@ import { io, Socket } from "socket.io-client";
 
 export type GameState = {
   scenario: string;
-  agents: Array<{ id: string; x: number; y: number; role: string; [key: string]: any }>;
-  resources: { grid_size?: number; [key: string]: any };
+  agents: Array<{ id: string; x: number; y: number; role: string }>;
+  resources: { grid_size?: number };
   score: number;
   tick: number;
 };
 
+export type DagNode = {
+  id: string;
+  label: string;
+  status: "active" | "idle" | "evolved" | "failed";
+  ctx_util: number;
+  system_prompt: string;
+  tools: string[];
+  last_actions: string[];
+};
+
+export type DagEdge = {
+  source: string;
+  target: string;
+  payload_size: number;
+  grpo_score: number;
+};
+
 export type DagData = {
-  nodes: Array<{ id: string; label: string; status: string; ctx_util: number }>;
-  edges: Array<{ source: string; target: string; payload_size: number; grpo_score: number }>;
+  nodes: DagNode[];
+  edges: DagEdge[];
 };
 
 export type AgentThought = {
   run_id: string;
   role: string;
   content: string;
-  timestamp: string;
+  timestamp: number;
 };
 
 export type HitlRequest = {
@@ -37,6 +54,13 @@ export type FitnessUpdate = {
   topology_diff: string;
   cost_per_task: number;
   latency: number;
+};
+
+export type GenerationComplete = {
+  gen_id: number;
+  parent_fitness: number;
+  child_fitness: number;
+  mutation_type: string;
 };
 
 type SocketContextType = {
@@ -92,8 +116,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setCurrentGeneration(data.generation);
     });
 
-    newSocket.on("generation_complete", (data: any) => {
-      // Handled if needed
+    newSocket.on("generation_complete", (_data: GenerationComplete) => {
+      // Reserved for future use (e.g. toast notifications)
     });
 
     return () => {
@@ -121,7 +145,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const emitStartEvolution = useCallback(() => {
     if (socket) {
-      socket.emit("start_evolution");
+      socket.emit("start_evolution", {});
       setIsRunning(true);
     }
   }, [socket]);

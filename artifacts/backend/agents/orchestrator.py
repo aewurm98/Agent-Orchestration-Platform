@@ -1,12 +1,13 @@
 """
 LangGraph StateGraph orchestrator for the Agentic Engineering Arena.
+All 7 nodes wired: goal_intake, topology_init, agent_step, evaluate,
+hitl_gate (proper node), mutate, checkpoint.
 """
 from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional, TypedDict
+from typing import Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
 
@@ -26,6 +27,7 @@ class ArenaState(TypedDict):
     topology: dict
     current_fitness: float
     generation: int
+    max_generations: int
     hitl_pending: bool
     confidence: float
     edge_scores: dict[str, float]
@@ -34,8 +36,12 @@ class ArenaState(TypedDict):
     traces: list[dict]
 
 
+# ---------------------------------------------------------------------------
+# Node implementations
+# ---------------------------------------------------------------------------
+
 def goal_intake(state: ArenaState) -> ArenaState:
-    """Parse scenario + objective."""
+    """Parse scenario and set high-level objective."""
     # STUB: replace with LLM call to parse and clarify objective
     objective_map = {
         "supply_chain": "Minimise stockout rate while reducing carrying cost",
@@ -45,14 +51,14 @@ def goal_intake(state: ArenaState) -> ArenaState:
     state["objective"] = objective_map.get(state["scenario"], "Optimise agent performance")
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
-        "content": f"Goal intake: {state['objective']}",
+        "content": f"Goal intake complete: {state['objective']}",
         "timestamp": time.time(),
     }]
     return state
 
 
 def topology_init(state: ArenaState) -> ArenaState:
-    """Initialise agent graph from config."""
+    """Initialise the agent graph topology from Taguchi L9 sample."""
     # STUB: replace with LLM call to design initial topology
     sample_configs = TaguchiL9Sample({
         "model": ["claude-3-haiku", "claude-3-sonnet", "claude-3-5-sonnet"],
@@ -86,7 +92,7 @@ def topology_init(state: ArenaState) -> ArenaState:
 def agent_step(state: ArenaState) -> ArenaState:
     """Run one tick of the active agent population."""
     # STUB: replace with LLM call for each active agent
-    for cfg in state.get("agent_configs", []):
+    for _cfg in state.get("agent_configs", []):
         pass  # agents would take actions here
 
     state["traces"] = state.get("traces", []) + [{
@@ -114,16 +120,29 @@ def evaluate(state: ArenaState) -> ArenaState:
     return state
 
 
+def hitl_gate(state: ArenaState) -> ArenaState:
+    """Node 5: mark state for HITL pause when confidence < 0.6."""
+    state["hitl_pending"] = state.get("confidence", 1.0) < 0.6
+    state["traces"] = state.get("traces", []) + [{
+        "role": "system",
+        "content": (
+            "HITL gate: pausing for human review"
+            if state["hitl_pending"]
+            else "HITL gate: confidence OK, continuing"
+        ),
+        "timestamp": time.time(),
+    }]
+    return state
+
+
 def mutate(state: ArenaState) -> ArenaState:
     """Apply semantic mutation + Graph-GRPO edge pruning."""
     for i, cfg in enumerate(state.get("agent_configs", [])):
         # STUB: replace with LLM call for semantic mutation
-        mutated = SemanticMutation(cfg)
-        state["agent_configs"][i] = mutated
+        state["agent_configs"][i] = SemanticMutation(cfg)
 
-    pruned_topology = GraphGRPOPrune(state["topology"], state["edge_scores"])
-    state["topology"] = pruned_topology
-
+    pruned = GraphGRPOPrune(state["topology"], state["edge_scores"])
+    state["topology"] = pruned
     state["generation"] = state.get("generation", 0) + 1
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
@@ -133,48 +152,81 @@ def mutate(state: ArenaState) -> ArenaState:
     return state
 
 
-def hitl_gate(state: ArenaState) -> str:
-    """Conditional node: pauses if confidence < threshold."""
-    if state.get("confidence", 1.0) < 0.6:
-        state["hitl_pending"] = True
-        return "hitl"
-    return "continue"
-
-
 def checkpoint(state: ArenaState) -> ArenaState:
-    """Serialize state to Redis (stubbed as in-memory)."""
+    """Serialize state snapshot (stubbed as in-memory; wire Redis here later)."""
     # STUB: replace with Redis snapshot
     key = f"arena:{state.get('run_id', 'default')}:gen:{state.get('generation', 0)}"
     state["checkpoint_key"] = key
+    GenerationLog(
+        generation=state["generation"],
+        fitness=state["current_fitness"],
+        mutation_type="stub",
+        topology_nodes=len(state.get("topology", {}).get("nodes", [])),
+    )
     return state
 
+
+# ---------------------------------------------------------------------------
+# Routing helpers (not graph nodes)
+# ---------------------------------------------------------------------------
+
+def _hitl_route(state: ArenaState) -> str:
+    """Route after hitl_gate: pause for human or continue to mutate."""
+    return "hitl" if state.get("hitl_pending") else "continue"
+
+
+def _continue_route(state: ArenaState) -> str:
+    """Route after checkpoint: stop at max generations or loop back."""
+    if state.get("generation", 0) >= state.get("max_generations", 10):
+        return "done"
+    return "next"
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
 
 def build_graph() -> StateGraph:
     graph = StateGraph(ArenaState)
 
+    # Register all 7 nodes
     graph.add_node("goal_intake", goal_intake)
     graph.add_node("topology_init", topology_init)
     graph.add_node("agent_step", agent_step)
     graph.add_node("evaluate", evaluate)
+    graph.add_node("hitl_gate", hitl_gate)
     graph.add_node("mutate", mutate)
     graph.add_node("checkpoint", checkpoint)
 
+    # Linear init chain
     graph.set_entry_point("goal_intake")
     graph.add_edge("goal_intake", "topology_init")
     graph.add_edge("topology_init", "agent_step")
     graph.add_edge("agent_step", "evaluate")
-    graph.add_conditional_edges("evaluate", hitl_gate, {
+
+    # hitl_gate is now a real node; routing is a separate conditional
+    graph.add_edge("evaluate", "hitl_gate")
+    graph.add_conditional_edges("hitl_gate", _hitl_route, {
         "hitl": "checkpoint",
         "continue": "mutate",
     })
     graph.add_edge("mutate", "checkpoint")
-    graph.add_edge("checkpoint", "agent_step")
+
+    # Loop back or terminate
+    graph.add_conditional_edges("checkpoint", _continue_route, {
+        "done": END,
+        "next": "agent_step",
+    })
 
     return graph.compile()
 
 
-async def run_orchestrator(scenario: str, run_id: str) -> dict:
-    """Run the orchestrator graph for one episode."""
+async def run_orchestrator(
+    scenario: str,
+    run_id: str,
+    max_generations: int = 5,
+) -> dict:
+    """Run the orchestrator graph for one episode, returning the final state."""
     graph = build_graph()
     initial_state: ArenaState = {
         "scenario": scenario,
@@ -183,6 +235,7 @@ async def run_orchestrator(scenario: str, run_id: str) -> dict:
         "topology": {},
         "current_fitness": 0.0,
         "generation": 0,
+        "max_generations": max_generations,
         "hitl_pending": False,
         "confidence": 1.0,
         "edge_scores": {},
@@ -190,6 +243,8 @@ async def run_orchestrator(scenario: str, run_id: str) -> dict:
         "run_id": run_id,
         "traces": [],
     }
-    # STUB: replace with actual graph invocation once LLM keys are set
-    result = initial_state
-    return result
+    result = await graph.ainvoke(
+        initial_state,
+        config={"recursion_limit": max_generations * 10 + 20},
+    )
+    return dict(result)
