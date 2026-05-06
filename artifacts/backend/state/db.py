@@ -140,6 +140,24 @@ async def save_trace(trace: TraceIn) -> dict:
         }
 
 
+async def get_workflow_by_id(workflow_id: str) -> Optional[dict]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(WorkflowModel).where(WorkflowModel.id == int(workflow_id))
+        )
+        row = result.scalars().first()
+        if row is None:
+            return None
+        return {
+            "id": row.id,
+            "name": row.name,
+            "scenario": row.scenario,
+            "best_fitness": row.best_fitness,
+            "topology": row.topology,
+            "created_at": row.created_at,
+        }
+
+
 async def get_traces(run_id: str) -> list[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
