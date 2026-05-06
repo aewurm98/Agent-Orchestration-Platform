@@ -300,6 +300,22 @@ async def save_current_workflow(payload: dict) -> dict:
     return {"workflow": saved}
 
 
+@app.post("/api/workflows/{workflow_id}/apply")
+async def apply_workflow(workflow_id: str) -> dict:
+    """Apply a saved workflow topology — returns its scenario so the frontend can start it."""
+    from state.db import get_workflow_by_id
+    wf = await get_workflow_by_id(workflow_id)
+    if wf is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return {
+        "workflow_id": workflow_id,
+        "scenario": wf.get("scenario", "supply_chain"),
+        "topology": wf.get("topology", {}),
+        "best_fitness": wf.get("best_fitness", 0.0),
+    }
+
+
 @app.get("/api/traces/{run_id}")
 async def get_run_traces(run_id: str) -> dict:
     traces = await get_traces(run_id)

@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useSocket } from "@/hooks/useSocket";
-import { Save, LibraryBig, X, Plus } from "lucide-react";
+import { Save, LibraryBig, X } from "lucide-react";
 
 type Workflow = {
   id: string;
@@ -16,7 +16,8 @@ type Workflow = {
 export default function WorkflowLibrary() {
   const [expanded, setExpanded] = useState(false);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const { emitScenarioSelect, evolutionData, gameState } = useSocket();
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const { evolutionData, gameState, isRunning, setIsRunning } = useSocket();
 
   const fetchWorkflows = async () => {
     try {
@@ -31,23 +32,21 @@ export default function WorkflowLibrary() {
   };
 
   useEffect(() => {
-    if (expanded) {
-      fetchWorkflows();
-    }
+    if (expanded) fetchWorkflows();
   }, [expanded]);
 
   const handleSaveCurrent = async () => {
     if (!gameState) return;
-    const latestFitness = evolutionData[evolutionData.length - 1]?.best_fitness || 0;
+    const latestFitness = evolutionData[evolutionData.length - 1]?.best_fitness ?? 0;
     try {
       await fetch("/api/workflows/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: `WF-${Math.floor(Math.random() * 1000)}`,
+          name: `WF-${Math.floor(Math.random() * 10000)}`,
           scenario: gameState.scenario,
-          best_fitness: latestFitness
-        })
+          best_fitness: latestFitness,
+        }),
       });
       fetchWorkflows();
     } catch (e) {
@@ -55,9 +54,38 @@ export default function WorkflowLibrary() {
     }
   };
 
+  const handleApply = async (wf: Workflow) => {
+    if (isRunning) return;
+    setApplyingId(wf.id);
+    try {
+      // 1. Fetch the workflow via the REST endpoint to confirm it exists
+      const res = await fetch(`/api/workflows/${wf.id}/apply`, { method: "POST" });
+      if (!res.ok) throw new Error("Apply failed");
+      const data = await res.json();
+
+      // 2. Start a new scenario run with the saved workflow's scenario
+      const startRes = await fetch("/api/scenario/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scenario: data.scenario,
+          mode: "autonomous",
+        }),
+      });
+      if (startRes.ok) {
+        setIsRunning(true);
+        setExpanded(false);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
   if (!expanded) {
     return (
-      <div 
+      <div
         className="absolute left-0 top-1/2 -translate-y-1/2 w-8 h-32 bg-[#161b22] border border-l-0 border-[#30363d] rounded-r-md cursor-pointer flex items-center justify-center hover:bg-[#30363d] transition-colors z-40 shadow-xl"
         onClick={() => setExpanded(true)}
         data-testid="btn-expand-library"
@@ -81,7 +109,7 @@ export default function WorkflowLibrary() {
       </div>
 
       <div className="p-4 border-b border-[#30363d]">
-        <Button 
+        <Button
           className="w-full bg-[#00d9ff] text-[#0d1117] hover:bg-[#00d9ff]/80"
           onClick={handleSaveCurrent}
           disabled={!gameState}
@@ -93,32 +121,41 @@ export default function WorkflowLibrary() {
 
       <ScrollArea className="flex-1 p-4">
         <div className="flex flex-col gap-3">
-          {workflows.map(wf => (
-            <div key={wf.id} className="bg-[#161b22] p-3 rounded-md border border-[#30363d] flex flex-col gap-2 group">
+          {workflows.map((wf) => (
+            <div
+              key={wf.id}
+              className="bg-[#161b22] p-3 rounded-md border border-[#30363d] flex flex-col gap-2 group"
+            >
               <div className="flex justify-between items-start">
                 <span className="font-mono text-sm">{wf.name}</span>
-                <Badge variant="outline" className="text-[10px] text-[#00d9ff] border-[#00d9ff]/30 bg-[#00d9ff]/10">
+                <Badge
+                  variant="outline"
+                  className="text-[10px] text-[#00d9ff] border-[#00d9ff]/30 bg-[#00d9ff]/10"
+                >
                   {wf.scenario}
                 </Badge>
               </div>
               <div className="flex justify-between items-center text-xs text-muted-foreground">
-                <span>Fitness: <span className="text-[#f59e0b]">{wf.best_fitness}</span></span>
-                <span>{new Date(wf.created_at).toLocaleDateString()}</span>
+                <span>
+                  Fitness: <span className="text-[#f59e0b]">{wf.best_fitness}</span>
+                </span>
+                <span>{new Date(Number(wf.created_at) * 1000).toLocaleDateString()}</span>
               </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="w-full mt-2 opacity-0 group-hover:opacity-100 transition-opacity h-7 text-xs border-[#30363d]"
-                onClick={() => emitScenarioSelect(wf.scenario)}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full mt-1 h-7 text-xs border-[#30363d] hover:border-[#00d9ff] hover:text-[#00d9ff]"
+                onClick={() => handleApply(wf)}
+                disabled={isRunning || applyingId === wf.id}
                 data-testid={`btn-apply-workflow-${wf.id}`}
               >
-                <Plus size={14} className="mr-1" /> Apply Topologies
+                {applyingId === wf.id ? "Applying…" : "Apply to Current Scenario"}
               </Button>
             </div>
           ))}
           {workflows.length === 0 && (
             <div className="text-center text-muted-foreground text-sm py-8">
-              No saved workflows
+              No saved workflows yet. Save the current run state to build a library.
             </div>
           )}
         </div>
