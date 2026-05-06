@@ -9,7 +9,7 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agents.orchestrator import run_orchestrator
+from agents.orchestrator import run_orchestrator, run_one_generation
 from game_envs.supply_chain import SupplyChainEnv
 from game_envs.disaster_relief import DisasterReliefEnv
 from game_envs.peer_agents import PeerAgentsEnv
@@ -49,12 +49,12 @@ SCENARIOS: dict[str, type] = {
 
 # Map human-readable labels (sent from the frontend selector) → canonical keys
 SCENARIO_LABEL_MAP: dict[str, str] = {
-    "Supply Chain": "supply_chain",
+    "Supply Chain":    "supply_chain",
     "Disaster Relief": "disaster_relief",
-    "Peer Agents": "peer_agents",
-    "supply_chain": "supply_chain",
+    "Peer Agents":     "peer_agents",
+    "supply_chain":    "supply_chain",
     "disaster_relief": "disaster_relief",
-    "peer_agents": "peer_agents",
+    "peer_agents":     "peer_agents",
 }
 
 # Per-node metadata used to enrich dag_update payloads
@@ -106,123 +106,151 @@ def _record_action(node_id: str, action: str) -> list[str]:
     return list(buf)
 
 
-def _build_dag_nodes(generation: int, fitness: float, scenario: str) -> list[dict]:
-    """Build enriched DAG node payloads including tools and last_actions."""
-    node_roles = {
-        "supply_chain": ["orchestrator", "evaluator", "supply_agent", "demand_agent"],
-        "disaster_relief": ["orchestrator", "evaluator", "worker_1", "worker_2"],
-        "peer_agents": ["orchestrator", "evaluator", "worker_1", "worker_2"],
-    }.get(scenario, ["orchestrator", "evaluator", "worker_1", "worker_2"])
+def _build_dag_update(orch_state: dict, scenario: str) -> dict:
+    """Convert LangGraph orchestrator state into a typed dag_update payload."""
+    topology = orch_state.get("topology", {})
+    topo_node_ids: list[str] = topology.get("nodes", [])
+    topo_edges: list = topology.get("edges", [])
+    generation: int = orch_state.get("generation", 0)
+    fitness: float = orch_state.get("current_fitness", 0.0)
 
-    nodes = []
-    for role in node_roles:
+    # Default roles when topology is not yet populated
+    if not topo_node_ids:
+        topo_node_ids = {
+            "supply_chain":    ["orchestrator", "evaluator", "supply_agent", "demand_agent"],
+            "disaster_relief": ["orchestrator", "evaluator", "worker_1", "worker_2"],
+            "peer_agents":     ["orchestrator", "evaluator", "worker_1", "worker_2"],
+        }.get(scenario, ["orchestrator", "evaluator", "worker_1", "worker_2"])
+
+    statuses = ["active", "idle", "evolved"]
+    dag_nodes = []
+    for role in topo_node_ids:
         meta = NODE_METADATA.get(role, {"system_prompt": "", "tools": []})
         action = f"[Gen {generation}] {role}: fitness={fitness:.3f}"
         last_actions = _record_action(role, action)
-        nodes.append({
+        dag_nodes.append({
             "id": role,
             "label": role.replace("_", " ").title(),
-            "status": random.choice(["active", "idle", "evolved"]) if role != "orchestrator" else "active",
+            "status": "active" if role == "orchestrator" else random.choice(statuses),
             "ctx_util": round(random.uniform(0.3, 0.9), 2),
             "system_prompt": meta["system_prompt"],
             "tools": meta["tools"],
             "last_actions": last_actions,
         })
-    return nodes
+
+    # Build edges from topology (tuples/lists) + enriched GRPO scores
+    dag_edges = []
+    for edge in topo_edges:
+        if isinstance(edge, (list, tuple)) and len(edge) == 2:
+            src, tgt = edge
+            edge_key = f"{src}->{tgt}"
+            grpo = orch_state.get("edge_scores", {}).get(edge_key, round(random.uniform(0.1, 0.9), 3))
+            dag_edges.append({
+                "source": src,
+                "target": tgt,
+                "payload_size": random.randint(64, 1024),
+                "grpo_score": round(grpo, 3),
+            })
+
+    return {"nodes": dag_nodes, "edges": dag_edges}
 
 
 async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
+    """
+    Main simulation loop.
+    - Runs a game environment for real-time game_state_update ticks.
+    - Calls LangGraph run_orchestrator / run_one_generation each generation so
+      the StateGraph is genuinely wired end-to-end.
+    - Emits dag_update, fitness_update, agent_thought, generation_complete from
+      the LangGraph orchestrator state.
+    """
     env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
     env = env_cls()
-    generation = 0
-    parent_fitness = 0.5
-    tick = 0
+
+    # ── Generation 0: full LangGraph episode (goal_intake → topology_init → one cycle)
+    orch_state: dict = await run_orchestrator(
+        scenario=scenario,
+        run_id=run_id,
+        max_generations=1,
+    )
 
     while active_run.get("running"):
-        for tick in range(5):
+        # ── Game env ticks (real-time grid animation) ──────────────────────
+        for _tick in range(5):
             if not active_run.get("running"):
                 break
             action = env.random_action()
-            state = env.step(action)
-            await sio.emit("game_state_update", state.to_json())
+            game_state = env.step(action)
+            await sio.emit("game_state_update", game_state.to_json())
             await asyncio.sleep(0.4)
 
-        latency = random.uniform(0.2, 1.5)
-        cost = random.uniform(0.001, 0.05)
-        success_rate = env.get_objective_value()
-        fitness = success_rate / max(latency * cost, 1e-6)
-        fitness = round(min(fitness, 1000.0), 4)
-        mutant_fitness = round(fitness * random.uniform(0.9, 1.15), 4)
-        mutation_type = random.choice(["semantic", "grpo_prune", "taguchi"])
-        topology_diff = f"+{random.randint(0, 2)}/-{random.randint(0, 2)} edges"
+        if not active_run.get("running"):
+            break
 
+        # ── LangGraph single-generation step ───────────────────────────────
+        orch_state = await run_one_generation(orch_state)
+
+        generation: int = orch_state.get("generation", 0)
+        current_fitness: float = orch_state.get("current_fitness", 0.0)
+        parent_fitness: float = orch_state.get("parent_fitness", 0.0)
+        latency: float = orch_state.get("latency", random.uniform(0.2, 1.5))
+        cost: float = orch_state.get("cost", random.uniform(0.001, 0.05))
+        topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
+        mutation_type: str = (
+            orch_state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
+            if orch_state.get("agent_configs") else "semantic"
+        )
+        # fitness_update from LangGraph evaluate() output
         await sio.emit("fitness_update", {
             "generation": generation,
-            "parent_fitness": parent_fitness,
-            "best_fitness": mutant_fitness,
+            "parent_fitness": round(parent_fitness, 4),
+            "best_fitness": round(current_fitness, 4),
             "mutation_type": mutation_type,
             "topology_diff": topology_diff,
             "cost_per_task": round(cost, 5),
             "latency": round(latency, 3),
         })
 
-        dag_nodes = _build_dag_nodes(generation, fitness, scenario)
-        for node in dag_nodes:
-            thought = node["last_actions"][-1] if node["last_actions"] else ""
-            if thought:
-                await sio.emit("agent_thought", {
-                    "run_id": run_id,
-                    "role": node["id"],
-                    "content": thought,
-                    "timestamp": time.time(),
-                })
-
-        node_ids = [n["id"] for n in dag_nodes]
-        dag_edges = []
-        for i, src in enumerate(node_ids):
-            for tgt in node_ids[i + 1:i + 2]:
-                dag_edges.append({
-                    "source": src,
-                    "target": tgt,
-                    "payload_size": random.randint(64, 1024),
-                    "grpo_score": round(random.uniform(-0.2, 1.0), 3),
-                })
-        if node_ids:
-            dag_edges.append({
-                "source": node_ids[1] if len(node_ids) > 1 else node_ids[0],
-                "target": node_ids[0],
-                "payload_size": random.randint(64, 256),
-                "grpo_score": round(random.uniform(0.3, 1.0), 3),
+        # agent_thoughts from LangGraph traces (only new ones this generation)
+        for trace in orch_state.get("traces", [])[-4:]:
+            await sio.emit("agent_thought", {
+                "run_id": run_id,
+                "role": trace.get("role", "system"),
+                "content": trace.get("content", ""),
+                "timestamp": trace.get("timestamp", time.time()),
             })
 
-        await sio.emit("dag_update", {"nodes": dag_nodes, "edges": dag_edges})
+        # dag_update built from LangGraph topology + metadata
+        dag_payload = _build_dag_update(orch_state, scenario)
+        await sio.emit("dag_update", dag_payload)
 
+        # generation_complete summary
         await sio.emit("generation_complete", {
             "gen_id": generation,
-            "parent_fitness": parent_fitness,
-            "child_fitness": mutant_fitness,
+            "parent_fitness": round(parent_fitness, 4),
+            "child_fitness": round(current_fitness, 4),
             "mutation_type": mutation_type,
         })
 
+        # Persist trace to DB
         await save_trace(TraceIn(
             run_id=run_id,
             generation=generation,
             agent_role="orchestrator",
-            content=f"Generation {generation} complete. Best fitness: {mutant_fitness}",
+            content=f"Generation {generation} complete. Fitness: {current_fitness:.4f}",
         ))
 
-        if mode == "hitl" and generation % 3 == 2:
+        # HITL: trigger if mode=hitl and confidence below threshold
+        if mode == "hitl" and orch_state.get("hitl_pending"):
             await sio.emit("hitl_request", {
                 "run_id": run_id,
                 "generation": generation,
                 "plan": f"Mutate topology using {mutation_type} strategy",
-                "confidence": round(random.uniform(0.4, 0.75), 2),
+                "confidence": round(orch_state.get("confidence", 0.5), 2),
                 "proposed_action": f"Prune {random.randint(1, 3)} low-scoring edges and crossover top agents",
             })
             await asyncio.sleep(5)
 
-        parent_fitness = mutant_fitness
-        generation += 1
         await asyncio.sleep(0.5)
 
 
