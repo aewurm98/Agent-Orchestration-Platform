@@ -211,14 +211,17 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "latency": round(latency, 3),
         })
 
-        # agent_thoughts from LangGraph traces (only new ones this generation)
-        for trace in orch_state.get("traces", [])[-4:]:
+        # agent_thoughts — emit each trace individually with a short delay to
+        # simulate incremental streaming cadence in the TracePanel
+        new_traces = orch_state.get("traces", [])[-4:]
+        for trace in new_traces:
             await sio.emit("agent_thought", {
                 "run_id": run_id,
                 "role": trace.get("role", "system"),
                 "content": trace.get("content", ""),
                 "timestamp": trace.get("timestamp", time.time()),
             })
+            await asyncio.sleep(0.12)  # 120 ms between thoughts for visible streaming
 
         # dag_update built from LangGraph topology + metadata
         dag_payload = _build_dag_update(orch_state, scenario)

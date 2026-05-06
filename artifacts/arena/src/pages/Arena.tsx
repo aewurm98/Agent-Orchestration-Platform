@@ -20,24 +20,24 @@ export default function Arena() {
   const [isHitl, setIsHitl] = useState(false);
 
   const handleStart = async () => {
-    if (isRunning) {
-      try {
-        await fetch("/api/scenario/stop", { method: "POST" });
-        setIsRunning(false);
-      } catch (e) {
-        console.error(e);
-      }
-    } else {
-      try {
-        await fetch("/api/scenario/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scenario, mode: isHitl ? "hitl" : "autonomous" })
-        });
-        emitStartEvolution();
-      } catch (e) {
-        console.error(e);
-      }
+    try {
+      await fetch("/api/scenario/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, mode: isHitl ? "hitl" : "autonomous" }),
+      });
+      emitStartEvolution();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleStop = async () => {
+    try {
+      await fetch("/api/scenario/stop", { method: "POST" });
+      setIsRunning(false);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -53,14 +53,17 @@ export default function Arena() {
 
       {/* TOP BAR */}
       <header className="h-[50px] shrink-0 border-b border-[#30363d] bg-[#161b22] px-4 flex items-center justify-between z-10 shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-[#e6edf3] font-bold tracking-widest text-sm mr-4">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-[#e6edf3] font-bold tracking-widest text-sm mr-2">
             <div className="w-2 h-2 rounded-full bg-[#00d9ff] animate-pulse shadow-[0_0_8px_#00d9ff]"></div>
             AE:ARENA
           </div>
-          
+
           <Select value={scenario} onValueChange={handleScenarioChange} disabled={isRunning}>
-            <SelectTrigger className="w-[180px] h-8 text-xs bg-[#0d1117] border-[#30363d] text-[#e6edf3]" data-testid="select-scenario">
+            <SelectTrigger
+              className="w-[180px] h-8 text-xs bg-[#0d1117] border-[#30363d] text-[#e6edf3]"
+              data-testid="select-scenario"
+            >
               <SelectValue placeholder="Scenario" />
             </SelectTrigger>
             <SelectContent className="bg-[#161b22] border-[#30363d] text-[#e6edf3]">
@@ -70,15 +73,29 @@ export default function Arena() {
             </SelectContent>
           </Select>
 
-          <Button 
-            variant={isRunning ? "destructive" : "default"} 
-            size="sm" 
-            className={`h-8 px-6 text-xs font-semibold ${!isRunning && 'bg-[#00d9ff] text-[#0d1117] hover:bg-[#00d9ff]/80'}`}
+          {/* Distinct Start button */}
+          <Button
+            size="sm"
+            className="h-8 px-5 text-xs font-semibold bg-[#00d9ff] text-[#0d1117] hover:bg-[#00d9ff]/80 disabled:opacity-40"
             onClick={handleStart}
-            data-testid="btn-toggle-run"
+            disabled={isRunning}
+            data-testid="btn-start"
           >
-            {isRunning ? "STOP EXPERIMENT" : "INITIATE"}
+            INITIATE
           </Button>
+
+          {/* Distinct Stop button — only rendered while running */}
+          {isRunning && (
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-8 px-5 text-xs font-semibold"
+              onClick={handleStop}
+              data-testid="btn-stop"
+            >
+              STOP
+            </Button>
+          )}
         </div>
 
         <div className="flex items-center gap-6">
@@ -86,25 +103,26 @@ export default function Arena() {
             <Label htmlFor="mode-toggle" className="text-xs text-muted-foreground uppercase tracking-wider">
               {isHitl ? "HITL Mode" : "Autonomous"}
             </Label>
-            <Switch 
-              id="mode-toggle" 
-              checked={isHitl} 
-              onCheckedChange={setIsHitl} 
+            <Switch
+              id="mode-toggle"
+              checked={isHitl}
+              onCheckedChange={setIsHitl}
               disabled={isRunning}
               className="data-[state=checked]:bg-[#f59e0b]"
             />
           </div>
-          
+
           <div className="flex items-center gap-2 border-l border-[#30363d] pl-6">
             <span className="text-xs text-[#8b949e] uppercase tracking-wider">Generation</span>
-            <span className="font-mono text-[#00d9ff] font-bold text-lg">{currentGeneration.toString().padStart(4, '0')}</span>
+            <span className="font-mono text-[#00d9ff] font-bold text-lg">
+              {currentGeneration.toString().padStart(4, "0")}
+            </span>
           </div>
         </div>
       </header>
 
       {/* CONTENT AREA */}
       <main className="flex-1 flex overflow-hidden">
-        
         {/* LEFT COLUMN */}
         <div className="w-[55%] flex flex-col border-r border-[#30363d]">
           <div className="h-[65%] w-full relative">
@@ -120,8 +138,8 @@ export default function Arena() {
           <Tabs defaultValue="dag" className="w-full h-full flex flex-col">
             <div className="border-b border-[#30363d] bg-[#0d1117] px-2 pt-2 shrink-0">
               <TabsList className="bg-transparent border-none gap-2 p-0 h-auto">
-                {["DAG", "Evolution", "Traces", "Library"].map(tab => (
-                  <TabsTrigger 
+                {["DAG", "Evolution", "Traces", "Library"].map((tab) => (
+                  <TabsTrigger
                     key={tab}
                     value={tab.toLowerCase()}
                     className="data-[state=active]:bg-[#161b22] data-[state=active]:text-[#00d9ff] data-[state=active]:border-b-2 data-[state=active]:border-[#00d9ff] rounded-none px-4 py-2 text-xs uppercase tracking-wider text-muted-foreground hover:text-[#e6edf3] transition-colors"
@@ -131,18 +149,25 @@ export default function Arena() {
                 ))}
               </TabsList>
             </div>
-            
+
             <div className="flex-1 overflow-hidden relative">
-              <TabsContent value="dag" className="m-0 h-full data-[state=inactive]:hidden"><DAGVisualizer /></TabsContent>
-              <TabsContent value="evolution" className="m-0 h-full data-[state=inactive]:hidden"><EvoDashboard /></TabsContent>
-              <TabsContent value="traces" className="m-0 h-full data-[state=inactive]:hidden"><TracePanel /></TabsContent>
+              <TabsContent value="dag" className="m-0 h-full data-[state=inactive]:hidden">
+                <DAGVisualizer />
+              </TabsContent>
+              <TabsContent value="evolution" className="m-0 h-full data-[state=inactive]:hidden">
+                <EvoDashboard />
+              </TabsContent>
+              <TabsContent value="traces" className="m-0 h-full data-[state=inactive]:hidden">
+                <TracePanel />
+              </TabsContent>
               <TabsContent value="library" className="m-0 h-full data-[state=inactive]:hidden p-4">
-                <div className="text-muted-foreground text-sm">Expand the library sidebar on the left to view and apply saved workflows.</div>
+                <div className="text-muted-foreground text-sm">
+                  Expand the library sidebar on the left to view and apply saved workflows.
+                </div>
               </TabsContent>
             </div>
           </Tabs>
         </div>
-
       </main>
     </div>
   );
