@@ -1,10 +1,26 @@
 import { createContext, useEffect, useState, ReactNode, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 
+export type GameAgent = {
+  id: string;
+  x: number;
+  y: number;
+  role: string;
+  inventory: number;
+  state: string;
+};
+
 export type GameState = {
   scenario: string;
-  agents: Array<{ id: string; x: number; y: number; role: string }>;
-  resources: { grid_size?: number };
+  agents: GameAgent[];
+  resources: {
+    grid_size?: number;
+    stock_level?: number;
+    demand_queue?: number;
+    backlog?: number;
+    carrying_cost?: number;
+    total_delivered?: number;
+  };
   score: number;
   tick: number;
 };
