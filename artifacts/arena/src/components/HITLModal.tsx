@@ -118,7 +118,7 @@ export default function HITLModal() {
           {mode === "view" ? (
             <>
               <Button variant="destructive" onClick={handleStop} data-testid="btn-hitl-stop">
-                <XSquare size={16} className="mr-2" /> Abort
+                <XSquare size={16} className="mr-2" /> Stop
               </Button>
               <Button variant="outline" className="border-[#f59e0b] text-[#f59e0b] hover:bg-[#f59e0b]/10 hover:text-[#f59e0b]" onClick={() => setMode("override")} data-testid="btn-hitl-override">
                 Override
