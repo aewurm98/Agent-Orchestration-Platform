@@ -1,29 +1,121 @@
 import { useEffect, useRef } from "react";
 import { useGameState } from "@/hooks/useGameState";
+import type { GameAgent } from "@/context/SocketContext";
 
-const ROLE_ICONS: Record<string, string> = {
-  warehouse:   "W",
-  distributor: "D",
-  retailer:    "R",
-  supplier:    "S",
-  worker:      "A",
-  orchestrator: "O",
-  evaluator:   "E",
-  rescuer:     "X",
-  coordinator: "C",
+const ROLE_EMOJI: Record<string, string> = {
+  supplier:    "🏭",
+  warehouse:   "🏪",
+  distributor: "🚚",
+  retailer:    "🛒",
 };
+
+const ROLE_COLOR: Record<string, string> = {
+  supplier:    "#ff6b6b",
+  warehouse:   "#00d9ff",
+  distributor: "#f59e0b",
+  retailer:    "#7ee787",
+};
+
+const FLOW_ROUTES: Array<[string, string, string]> = [
+  ["supplier",    "warehouse",   "#ff6b6b"],
+  ["warehouse",   "distributor", "#00d9ff"],
+  ["distributor", "retailer",    "#f59e0b"],
+];
+
+function roleColor(role: string): string {
+  return ROLE_COLOR[role.toLowerCase()] ?? "#e6edf3";
+}
+
+function drawFlowLines(
+  ctx: CanvasRenderingContext2D,
+  agents: GameAgent[],
+  cellW: number,
+  cellH: number,
+) {
+  const byRole = (role: string) => agents.filter((a) => a.role === role);
+
+  for (const [srcRole, tgtRole, color] of FLOW_ROUTES) {
+    const sources = byRole(srcRole);
+    const targets = byRole(tgtRole);
+    for (const src of sources) {
+      for (const tgt of targets) {
+        const x1 = src.x * cellW + cellW / 2;
+        const y1 = src.y * cellH + cellH / 2;
+        const x2 = tgt.x * cellW + cellW / 2;
+        const y2 = tgt.y * cellH + cellH / 2;
+
+        ctx.save();
+        ctx.strokeStyle = color + "33";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+}
+
+function drawAgent(
+  ctx: CanvasRenderingContext2D,
+  agent: GameAgent,
+  cellW: number,
+  cellH: number,
+) {
+  const cx = agent.x * cellW + cellW / 2;
+  const cy = agent.y * cellH + cellH / 2;
+  const half = Math.min(cellW, cellH) * 0.38;
+  const color = roleColor(agent.role);
+  const emoji = ROLE_EMOJI[agent.role.toLowerCase()] ?? "?";
+  const isActive = agent.state === "delivering" || agent.state === "generating";
+
+  // Glow halo when active
+  if (isActive) {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = color + "88";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx - half - 3, cy - half - 3, (half + 3) * 2, (half + 3) * 2);
+    ctx.restore();
+  }
+
+  // Filled square background
+  ctx.fillStyle = color + "22";
+  ctx.fillRect(cx - half, cy - half, half * 2, half * 2);
+
+  // Border square
+  ctx.strokeStyle = color;
+  ctx.lineWidth = isActive ? 2 : 1;
+  ctx.strokeRect(cx - half, cy - half, half * 2, half * 2);
+
+  // Emoji label — centred
+  const emojiSize = Math.max(12, half * 0.85);
+  ctx.font = `${emojiSize}px serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, cx, cy - half * 0.12);
+
+  // Inventory count below emoji
+  ctx.fillStyle = color;
+  ctx.font = `bold ${Math.max(7, half * 0.42)}px monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(agent.inventory), cx, cy + half * 0.52);
+}
 
 function drawResourcePanel(
   ctx: CanvasRenderingContext2D,
   resources: Record<string, number>,
   width: number,
   height: number,
+  panelH: number,
 ) {
-  const panelH = 56;
   const panelY = height - panelH;
 
-  // Semi-transparent background strip
-  ctx.fillStyle = "rgba(22, 27, 34, 0.88)";
+  ctx.fillStyle = "rgba(13, 17, 23, 0.92)";
   ctx.fillRect(0, panelY, width, panelH);
   ctx.strokeStyle = "#30363d";
   ctx.lineWidth = 1;
@@ -32,79 +124,42 @@ function drawResourcePanel(
   ctx.lineTo(width, panelY);
   ctx.stroke();
 
-  const metrics: [string, string, string][] = [
-    ["STOCK",  String(resources.stock_level  ?? 0), "#00d9ff"],
-    ["DEMAND", String(resources.demand_queue ?? 0), "#f59e0b"],
-    ["BACKLOG",String(resources.backlog      ?? 0), "#f87171"],
-    ["COST",   String(resources.carrying_cost ?? 0), "#7ee787"],
+  const metrics: [string, number, number, string][] = [
+    ["STOCK",     resources.stock_level   ?? 0, 2000,  "#00d9ff"],
+    ["DEMAND",    resources.demand_queue  ?? 0, 500,   "#f59e0b"],
+    ["BACKLOG",   resources.backlog       ?? 0, 500,   "#f87171"],
+    ["DELIVERED", resources.total_delivered ?? 0, 2000, "#7ee787"],
   ];
 
   const colW = width / metrics.length;
-  metrics.forEach(([label, value, color], i) => {
+  metrics.forEach(([label, value, max, color], i) => {
     const cx = i * colW + colW / 2;
-    // Label
     ctx.fillStyle = "#8b949e";
-    ctx.font = "10px var(--font-mono, monospace)";
+    ctx.font = "10px monospace";
     ctx.textAlign = "center";
-    ctx.fillText(label, cx, panelY + 16);
-    // Value bar (normalized to max 1000)
-    const maxVal = label === "COST" ? 1 : 1000;
-    const pct = Math.min(Number(value) / maxVal, 1);
-    const barW = colW * 0.7;
+    ctx.textBaseline = "top";
+    ctx.fillText(label, cx, panelY + 6);
+
+    const pct = Math.min(value / max, 1);
+    const barW = colW * 0.72;
     const barH = 5;
     const barX = cx - barW / 2;
     ctx.fillStyle = "#30363d";
     ctx.fillRect(barX, panelY + 22, barW, barH);
     ctx.fillStyle = color;
     ctx.fillRect(barX, panelY + 22, barW * pct, barH);
-    // Numeric
+
     ctx.fillStyle = color;
-    ctx.font = "bold 11px var(--font-mono, monospace)";
-    ctx.fillText(value, cx, panelY + 44);
-  });
-}
-
-function drawResourceNodes(
-  ctx: CanvasRenderingContext2D,
-  resources: Record<string, number>,
-  cellWidth: number,
-  cellHeight: number,
-  gridSize: number,
-) {
-  // Draw fixed resource depot icons at grid corners/midpoints
-  const depots: [number, number, string, string][] = [
-    [0, 0, "STOCK", "#00d9ff"],
-    [gridSize - 1, 0, "DEM", "#f59e0b"],
-    [0, gridSize - 1, "SUP", "#7ee787"],
-    [gridSize - 1, gridSize - 1, "LOG", "#f87171"],
-  ];
-  depots.forEach(([gx, gy, label, color]) => {
-    const px = gx * cellWidth + cellWidth / 2;
-    const py = gy * cellHeight + cellHeight / 2;
-    const r = Math.min(cellWidth, cellHeight) * 0.22;
-
-    // Depot square icon
-    ctx.fillStyle = color + "22";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.rect(px - r, py - r, r * 2, r * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Label inside
-    ctx.fillStyle = color;
-    ctx.font = `bold ${Math.max(8, r * 0.9)}px var(--font-mono, monospace)`;
+    ctx.font = `bold 11px monospace`;
     ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(label, px, py);
-    ctx.textBaseline = "alphabetic";
+    ctx.textBaseline = "top";
+    ctx.fillText(String(value), cx, panelY + 32);
   });
 }
 
 export default function GameViewport() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { gameState, getRoleColor } = useGameState();
+  const { gameState } = useGameState();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -112,9 +167,9 @@ export default function GameViewport() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const width = canvas.clientWidth;
+    const width  = canvas.clientWidth;
     const height = canvas.clientHeight;
-    canvas.width = width;
+    canvas.width  = width;
     canvas.height = height;
 
     // Background
@@ -123,85 +178,102 @@ export default function GameViewport() {
 
     if (!gameState) {
       ctx.fillStyle = "#8b949e";
-      ctx.font = "16px var(--font-mono, monospace)";
+      ctx.font = "16px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("WAITING FOR SIMULATION", width / 2, height / 2);
-      ctx.textBaseline = "alphabetic";
       return;
     }
 
-    const gridSize = gameState.resources?.grid_size ?? 8;
-    const cellWidth = width / gridSize;
-    const resourcePanelH = 56;
-    const gridHeight = height - resourcePanelH;
-    const cellHeight = gridHeight / gridSize;
+    const gridSize    = gameState.resources?.grid_size ?? 10;
+    const panelH      = 54;
+    const gridH       = height - panelH;
+    const cellW       = width  / gridSize;
+    const cellH       = gridH  / gridSize;
 
     // Grid lines
+    ctx.strokeStyle = "#21262d";
+    ctx.lineWidth   = 0.5;
+    for (let c = 0; c <= gridSize; c++) {
+      ctx.beginPath(); ctx.moveTo(c * cellW, 0); ctx.lineTo(c * cellW, gridH); ctx.stroke();
+    }
+    for (let r = 0; r <= gridSize; r++) {
+      ctx.beginPath(); ctx.moveTo(0, r * cellH); ctx.lineTo(width, r * cellH); ctx.stroke();
+    }
+
+    // Flow lines between agent types (drawn first, under agents)
+    if (gameState.agents?.length) {
+      drawFlowLines(ctx, gameState.agents, cellW, cellH);
+    }
+
+    // Agents as colored squares with emoji
+    if (gameState.agents?.length) {
+      for (const agent of gameState.agents) {
+        drawAgent(ctx, agent, cellW, cellH);
+      }
+    }
+
+    // HUD: top-left overlay
+    const hudW = 210;
+    const hudH = 46;
+    ctx.fillStyle = "rgba(22,27,34,0.82)";
+    ctx.fillRect(8, 8, hudW, hudH);
     ctx.strokeStyle = "#30363d";
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x <= width; x += cellWidth) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, gridHeight); ctx.stroke();
-    }
-    for (let y = 0; y <= gridHeight; y += cellHeight) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
-    }
+    ctx.lineWidth = 1;
+    ctx.strokeRect(8, 8, hudW, hudH);
 
-    // Resource depot icons at grid corners
-    drawResourceNodes(ctx, gameState.resources as Record<string, number>, cellWidth, cellHeight, gridSize);
-
-    // Agents as filled circles with role letter
-    if (gameState.agents) {
-      gameState.agents.forEach((agent) => {
-        const cx = agent.x * cellWidth + cellWidth / 2;
-        const cy = agent.y * cellHeight + cellHeight / 2;
-        const r = Math.min(cellWidth, cellHeight) * 0.3;
-        const color = getRoleColor(agent.role);
-
-        // Glow ring
-        ctx.strokeStyle = color + "55";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r + 3, 0, 2 * Math.PI);
-        ctx.stroke();
-
-        // Filled circle
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-        ctx.fill();
-
-        // Role initial inside
-        const icon = ROLE_ICONS[agent.role.toLowerCase()] ?? agent.role[0]?.toUpperCase() ?? "?";
-        ctx.fillStyle = "#0d1117";
-        ctx.font = `bold ${Math.max(9, r * 0.85)}px var(--font-mono, monospace)`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(icon, cx, cy);
-        ctx.textBaseline = "alphabetic";
-      });
-    }
-
-    // HUD overlay — scenario + tick
-    ctx.fillStyle = "rgba(22, 27, 34, 0.75)";
-    ctx.fillRect(8, 8, 200, 40);
-    ctx.fillStyle = "#e6edf3";
-    ctx.font = "12px var(--font-sans, sans-serif)";
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "11px monospace";
     ctx.textAlign = "left";
-    ctx.fillText(`Scenario: ${gameState.scenario}`, 16, 24);
+    ctx.textBaseline = "top";
+    ctx.fillText(`Scenario: ${gameState.scenario.replace(/_/g, " ")}`, 16, 16);
+
     ctx.fillStyle = "#00d9ff";
-    ctx.fillText(`Score: ${gameState.score.toFixed(4)}  Tick: ${gameState.tick}`, 16, 40);
+    ctx.font = "bold 12px monospace";
+    ctx.fillText(
+      `Score: ${gameState.score.toFixed(2)}  Tick: ${gameState.tick}`,
+      16, 33,
+    );
 
-    // Resource panel at the bottom
-    drawResourcePanel(ctx, gameState.resources as Record<string, number>, width, height);
+    // Legend — top-right
+    const legendEntries: [string, string][] = [
+      ["🏭 Supplier",    "#ff6b6b"],
+      ["🏪 Warehouse",   "#00d9ff"],
+      ["🚚 Distributor", "#f59e0b"],
+      ["🛒 Retailer",    "#7ee787"],
+    ];
+    const legendW = 110;
+    const legendPad = 6;
+    const legendLineH = 14;
+    const legendH = legendEntries.length * legendLineH + legendPad * 2;
+    const legendX = width - legendW - 8;
+    ctx.fillStyle = "rgba(22,27,34,0.82)";
+    ctx.fillRect(legendX, 8, legendW, legendH);
+    ctx.strokeStyle = "#30363d";
+    ctx.strokeRect(legendX, 8, legendW, legendH);
+    legendEntries.forEach(([label, color], i) => {
+      ctx.fillStyle = color;
+      ctx.font = "11px monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(label, legendX + legendPad, 8 + legendPad + i * legendLineH);
+    });
 
-  }, [gameState, getRoleColor]);
+    // Resource panel at bottom
+    drawResourcePanel(
+      ctx,
+      gameState.resources as Record<string, number>,
+      width,
+      height,
+      panelH,
+    );
+  }, [gameState]);
 
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative bg-[#0d1117]">
       <canvas
         ref={canvasRef}
-        className="w-full h-full bg-[#0d1117] block"
+        className="w-full h-full block"
         data-testid="canvas-game-viewport"
       />
     </div>

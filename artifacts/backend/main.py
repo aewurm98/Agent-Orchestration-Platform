@@ -158,12 +158,12 @@ def _build_dag_update(orch_state: dict, scenario: str) -> dict:
 async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     """
     Main simulation loop.
-    - Runs a game environment for real-time game_state_update ticks.
-    - Calls LangGraph run_orchestrator / run_one_generation each generation so
-      the StateGraph is genuinely wired end-to-end.
-    - Emits dag_update, fitness_update, agent_thought, generation_complete from
-      the LangGraph orchestrator state.
+    - Game env ticks every 500 ms; emits game_state_update each tick.
+    - Every LANGGRAPH_TICK_INTERVAL ticks a LangGraph generation step runs and
+      emits dag_update, fitness_update, agent_thought, generation_complete.
     """
+    LANGGRAPH_TICK_INTERVAL = 5  # run LangGraph every 5 game ticks (2.5 s)
+
     env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
     env = env_cls()
 
@@ -174,86 +174,87 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         max_generations=1,
     )
 
+    game_tick_counter = 0
+
     while active_run.get("running"):
-        # ── Game env ticks (real-time grid animation) ──────────────────────
-        for _tick in range(5):
-            if not active_run.get("running"):
-                break
-            action = env.random_action()
-            game_state = env.step(action)
-            await sio.emit("game_state_update", game_state.to_json())
-            await asyncio.sleep(0.4)
+        # ── 500 ms game tick ───────────────────────────────────────────────
+        game_state = env.step(env.random_action())
+        await sio.emit("game_state_update", game_state.to_json())
+        game_tick_counter += 1
 
         if not active_run.get("running"):
             break
 
-        # ── LangGraph single-generation step ───────────────────────────────
-        orch_state = await run_one_generation(orch_state)
+        # ── LangGraph generation step (every N ticks) ──────────────────────
+        if game_tick_counter % LANGGRAPH_TICK_INTERVAL == 0:
+            orch_state = await run_one_generation(orch_state)
 
-        generation: int = orch_state.get("generation", 0)
-        current_fitness: float = orch_state.get("current_fitness", 0.0)
-        parent_fitness: float = orch_state.get("parent_fitness", 0.0)
-        latency: float = orch_state.get("latency", random.uniform(0.2, 1.5))
-        cost: float = orch_state.get("cost", random.uniform(0.001, 0.05))
-        topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
-        mutation_type: str = (
-            orch_state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
-            if orch_state.get("agent_configs") else "semantic"
-        )
-        # fitness_update from LangGraph evaluate() output
-        await sio.emit("fitness_update", {
-            "generation": generation,
-            "parent_fitness": round(parent_fitness, 4),
-            "best_fitness": round(current_fitness, 4),
-            "mutation_type": mutation_type,
-            "topology_diff": topology_diff,
-            "cost_per_task": round(cost, 5),
-            "latency": round(latency, 3),
-        })
+            generation: int = orch_state.get("generation", 0)
+            current_fitness: float = orch_state.get("current_fitness", 0.0)
+            parent_fitness: float = orch_state.get("parent_fitness", 0.0)
+            latency: float = orch_state.get("latency", random.uniform(0.2, 1.5))
+            cost: float = orch_state.get("cost", random.uniform(0.001, 0.05))
+            topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
+            mutation_type: str = (
+                orch_state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
+                if orch_state.get("agent_configs") else "semantic"
+            )
 
-        # agent_thoughts — emit each trace individually with a short delay to
-        # simulate incremental streaming cadence in the TracePanel
-        new_traces = orch_state.get("traces", [])[-4:]
-        for trace in new_traces:
-            await sio.emit("agent_thought", {
-                "run_id": run_id,
-                "role": trace.get("role", "system"),
-                "content": trace.get("content", ""),
-                "timestamp": trace.get("timestamp", time.time()),
-            })
-            await asyncio.sleep(0.12)  # 120 ms between thoughts for visible streaming
-
-        # dag_update built from LangGraph topology + metadata
-        dag_payload = _build_dag_update(orch_state, scenario)
-        await sio.emit("dag_update", dag_payload)
-
-        # generation_complete summary
-        await sio.emit("generation_complete", {
-            "gen_id": generation,
-            "parent_fitness": round(parent_fitness, 4),
-            "child_fitness": round(current_fitness, 4),
-            "mutation_type": mutation_type,
-        })
-
-        # Persist trace to DB
-        await save_trace(TraceIn(
-            run_id=run_id,
-            generation=generation,
-            agent_role="orchestrator",
-            content=f"Generation {generation} complete. Fitness: {current_fitness:.4f}",
-        ))
-
-        # HITL: trigger if mode=hitl and confidence below threshold
-        if mode == "hitl" and orch_state.get("hitl_pending"):
-            await sio.emit("hitl_request", {
-                "run_id": run_id,
+            # fitness_update from LangGraph evaluate() output
+            await sio.emit("fitness_update", {
                 "generation": generation,
-                "plan": f"Mutate topology using {mutation_type} strategy",
-                "confidence": round(orch_state.get("confidence", 0.5), 2),
-                "proposed_action": f"Prune {random.randint(1, 3)} low-scoring edges and crossover top agents",
+                "parent_fitness": round(parent_fitness, 4),
+                "best_fitness": round(current_fitness, 4),
+                "mutation_type": mutation_type,
+                "topology_diff": topology_diff,
+                "cost_per_task": round(cost, 5),
+                "latency": round(latency, 3),
             })
-            await asyncio.sleep(5)
 
+            # agent_thoughts — emit each trace individually with a short delay
+            # to give the TracePanel a visible streaming cadence
+            new_traces = orch_state.get("traces", [])[-4:]
+            for trace in new_traces:
+                await sio.emit("agent_thought", {
+                    "run_id": run_id,
+                    "role": trace.get("role", "system"),
+                    "content": trace.get("content", ""),
+                    "timestamp": trace.get("timestamp", time.time()),
+                })
+                await asyncio.sleep(0.12)  # 120 ms between thoughts
+
+            # dag_update built from LangGraph topology + metadata
+            dag_payload = _build_dag_update(orch_state, scenario)
+            await sio.emit("dag_update", dag_payload)
+
+            # generation_complete summary
+            await sio.emit("generation_complete", {
+                "gen_id": generation,
+                "parent_fitness": round(parent_fitness, 4),
+                "child_fitness": round(current_fitness, 4),
+                "mutation_type": mutation_type,
+            })
+
+            # Persist trace to DB
+            await save_trace(TraceIn(
+                run_id=run_id,
+                generation=generation,
+                agent_role="orchestrator",
+                content=f"Generation {generation} complete. Fitness: {current_fitness:.4f}",
+            ))
+
+            # HITL: trigger if mode=hitl and confidence below threshold
+            if mode == "hitl" and orch_state.get("hitl_pending"):
+                await sio.emit("hitl_request", {
+                    "run_id": run_id,
+                    "generation": generation,
+                    "plan": f"Mutate topology using {mutation_type} strategy",
+                    "confidence": round(orch_state.get("confidence", 0.5), 2),
+                    "proposed_action": f"Prune {random.randint(1, 3)} low-scoring edges and crossover top agents",
+                })
+                await asyncio.sleep(5)
+
+        # 500 ms cadence — one game tick per interval
         await asyncio.sleep(0.5)
 
 
