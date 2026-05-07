@@ -1,9 +1,11 @@
 """
-Manufacturing game environment: three-stage pipeline simulation.
+Manufacturing game environment: three-stage pipeline simulation (Legacy).
 
-Stages: Raw Materials → Intermediates → Finished Product
-Each stage has an input buffer, a throughput capacity, and an output buffer.
-Workers operate on individual stages; a Planner oversees the full pipeline.
+This module is kept for backward compatibility.
+The new implementation is in game_envs/manufacturing_v2/.
+
+ManufacturingEnvLegacy = original 3-stage pipeline abstraction
+ManufacturingEnv       = alias for ManufacturingEnvV2 (the grid-based engine)
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
-DEFECT_RATE = 0.08  # 8% of processed units become defective
+DEFECT_RATE = 0.08
 
 
 STAGE_NAMES = ["raw_materials", "intermediates", "finished_product"]
@@ -21,7 +23,7 @@ MATERIAL_TYPES = ["ore", "components", "products"]
 INITIAL_INPUT = [120, 0, 0]
 THROUGHPUT_CAPS = [35, 28, 22]
 DEFAULT_TARGETS = [20, 15, 10]
-NATURAL_REPLENISHMENT = 12  # units added to stage-0 input each tick
+NATURAL_REPLENISHMENT = 12
 
 
 @dataclass
@@ -33,13 +35,13 @@ class Stage:
     output_buffer: int
     throughput_capacity: int
     target_units: int
-    worker_state: str = "idle"   # idle | processing | blocked
+    worker_state: str = "idle"
     total_processed: int = 0
     defective_units: int = 0
-    idle_ticks: int = 0          # consecutive ticks in idle/blocked state
+    idle_ticks: int = 0
 
 
-class ManufacturingEnv:
+class ManufacturingEnvLegacy:
     def __init__(self) -> None:
         self._tick: int = 0
         self._approved_finished: int = 0
@@ -55,8 +57,6 @@ class ManufacturingEnv:
             )
             for i in range(3)
         ]
-
-    # ── public actions called by skill handlers ─────────────────────────────
 
     def process_batch(self, stage_name: str, quantity: int) -> dict:
         stage = self._get_stage(stage_name)
@@ -97,7 +97,7 @@ class ManufacturingEnv:
             return {"ok": False, "error": "unknown stage"}
         qty = max(0, min(quantity, stage.output_buffer, stage.defective_units))
         stage.defective_units = max(0, stage.defective_units - qty)
-        stage.output_buffer -= qty  # reworked units go back to input
+        stage.output_buffer -= qty
         stage.input_buffer += qty
         return {"ok": True, "reworked": qty}
 
@@ -142,10 +142,7 @@ class ManufacturingEnv:
             "defective_units": stage.defective_units,
         }
 
-    # ── planner query ───────────────────────────────────────────────────────
-
     def query_pipeline_status(self) -> dict:
-        """Return aggregate WIP, throughput, buffer levels, and idle counts for all three stages."""
         stages = {}
         for s in self._stages:
             throughput_rate = round(s.total_processed / max(self._tick, 1), 2)
@@ -158,7 +155,7 @@ class ManufacturingEnv:
                 "total_processed": s.total_processed,
                 "throughput_rate_per_tick": throughput_rate,
                 "wip": s.input_buffer + s.output_buffer,
-                "idle_count": s.idle_ticks,          # consecutive idle/blocked ticks
+                "idle_count": s.idle_ticks,
                 "is_idle": s.worker_state in ("idle", "blocked"),
             }
         return {
@@ -169,29 +166,21 @@ class ManufacturingEnv:
             "total_throughput": sum(s.total_processed for s in self._stages),
         }
 
-    # ── tick (target-driven flow between stages) ────────────────────────────
-
     def tick(self) -> None:
         self._tick += 1
-        # Replenish raw-materials input
         self._stages[0].input_buffer = min(
             self._stages[0].input_buffer + NATURAL_REPLENISHMENT, 300
         )
-        # Drain each stage's output buffer into the next stage's input buffer,
-        # capped at the downstream stage's target_units (target-driven pull).
         for i in range(len(self._stages) - 1):
             pull_cap = self._stages[i + 1].target_units
             transfer = min(self._stages[i].output_buffer, pull_cap)
             self._stages[i].output_buffer -= transfer
             self._stages[i + 1].input_buffer += transfer
-        # Track idle_ticks for stages that weren't actively processing
         for s in self._stages:
             if s.worker_state in ("idle", "blocked"):
                 s.idle_ticks += 1
             else:
                 s.idle_ticks = 0
-
-    # ── helpers ─────────────────────────────────────────────────────────────
 
     def _get_stage(self, name: str) -> Stage | None:
         for s in self._stages:

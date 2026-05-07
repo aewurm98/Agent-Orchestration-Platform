@@ -20,7 +20,6 @@ export type GameState = {
     backlog?: number;
     carrying_cost?: number;
     total_delivered?: number;
-    // manufacturing resources
     raw_input?: number;
     inter_input?: number;
     finished_output?: number;
@@ -29,6 +28,105 @@ export type GameState = {
   };
   score: number;
   tick: number;
+};
+
+export type MfgV2Agent = {
+  id: string;
+  role: string;
+  row: number;
+  col: number;
+  state: string;
+  inventory: Array<{ id: string; type: string }>;
+  inventory_count: number;
+  is_standby: boolean;
+  active_macro: string | null;
+  wage_per_tick: number;
+  messages: Array<unknown>;
+};
+
+export type MfgV2Machine = {
+  id: string;
+  type: string;
+  row: number;
+  col: number;
+  state: string;
+  speed: string;
+  input_queue_len: number;
+  output_queue_len: number;
+  input_queue: Array<{ id: string; type: string }>;
+  output_queue: Array<{ id: string; type: string }>;
+  processing_ticks_remaining: number;
+  health: number;
+  total_produced: number;
+  power_cost_per_tick: number;
+};
+
+export type MfgV2Item = {
+  id: string;
+  type: string;
+  row: number | null;
+  col: number | null;
+  carrier_id: string | null;
+};
+
+export type MfgOrder = {
+  id: string;
+  product_type: string;
+  quantity: number;
+  deadline_tick: number;
+  base_price: number;
+  effective_price: number;
+  arrival_tick: number;
+  fulfilled: number;
+  is_rush: boolean;
+  remaining: number;
+};
+
+export type MfgMetrics = {
+  tick: number;
+  throughput: number;
+  avg_latency: number;
+  total_revenue: number;
+  total_costs: number;
+  current_profit: number;
+  agent_idle_ratio: number;
+  machine_utilization: number;
+  queue_lengths: Record<string, number>;
+  orders_fulfilled: number;
+  orders_missed: number;
+  budget: number;
+  pl: Record<string, number>;
+};
+
+export type MfgAlert = {
+  type: string;
+  event?: string;
+  message?: string;
+  machine_id?: string;
+  machine_type?: string;
+  agent_id?: string;
+  budget?: number;
+  order_id?: string;
+};
+
+export type MfgGameState = {
+  scenario: string;
+  tick: number;
+  done: boolean;
+  grid: string[][];
+  grid_rows: number;
+  grid_cols: number;
+  agents: Record<string, MfgV2Agent>;
+  machines: Record<string, MfgV2Machine>;
+  items: MfgV2Item[];
+  budget: number;
+  active_orders: MfgOrder[];
+  metrics: MfgMetrics;
+  fitness: number;
+  score: number;
+  alerts: MfgAlert[];
+  simulation_length: number;
+  resources: Record<string, number>;
 };
 
 export type DagNode = {
@@ -58,7 +156,6 @@ export type AgentThought = {
   role: string;
   content: string;
   timestamp: number;
-  // enriched manufacturing fields (optional)
   agent_name?: string;
   agent_role?: string;
   stage?: string | null;
@@ -95,6 +192,9 @@ export type GenerationComplete = {
 type SocketContextType = {
   socket: Socket | null;
   gameState: GameState | null;
+  mfgState: MfgGameState | null;
+  mfgMetrics: MfgMetrics | null;
+  mfgAlerts: MfgAlert[];
   dagData: DagData | null;
   evolutionData: FitnessUpdate[];
   traces: AgentThought[];
@@ -104,15 +204,21 @@ type SocketContextType = {
   emitHitlResponse: (action: "approve" | "override" | "stop", constraint?: string) => void;
   emitScenarioSelect: (scenario: string) => void;
   emitStartEvolution: () => void;
+  emitMfgAction: (agentId: string, actionType: string, params?: Record<string, unknown>) => void;
   setIsRunning: (running: boolean) => void;
   clearHitlRequest: () => void;
 };
 
 export const SocketContext = createContext<SocketContextType | undefined>(undefined);
 
+const MAX_ALERTS = 20;
+
 export function SocketProvider({ children }: { children: ReactNode }) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [mfgState, setMfgState] = useState<MfgGameState | null>(null);
+  const [mfgMetrics, setMfgMetrics] = useState<MfgMetrics | null>(null);
+  const [mfgAlerts, setMfgAlerts] = useState<MfgAlert[]>([]);
   const [dagData, setDagData] = useState<DagData | null>(null);
   const [evolutionData, setEvolutionData] = useState<FitnessUpdate[]>([]);
   const [traces, setTraces] = useState<AgentThought[]>([]);
@@ -124,8 +230,38 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     const newSocket = io("/", { path: "/socket.io" });
     setSocket(newSocket);
 
-    newSocket.on("game_state_update", (data: GameState) => {
-      setGameState(data);
+    newSocket.on("game_state_update", (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      if (d.scenario === "manufacturing" && d.grid) {
+        setMfgState(d as unknown as MfgGameState);
+      } else {
+        setGameState(data as GameState);
+      }
+    });
+
+    newSocket.on("tick_update", (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      if (d.grid) {
+        setMfgState(d as unknown as MfgGameState);
+      }
+    });
+
+    newSocket.on("metrics_update", (data: MfgMetrics) => {
+      setMfgMetrics(data);
+    });
+
+    newSocket.on("alert", (data: MfgAlert) => {
+      setMfgAlerts((prev) => {
+        const updated = [...prev, data];
+        return updated.slice(-MAX_ALERTS);
+      });
+    });
+
+    newSocket.on("game_over", (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      if (d.metrics) {
+        setMfgMetrics(d.metrics as MfgMetrics);
+      }
     });
 
     newSocket.on("dag_update", (data: DagData) => {
@@ -133,7 +269,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     newSocket.on("agent_thought", (data: AgentThought) => {
-      setTraces((prev) => [...prev, data]);
+      setTraces((prev) => [...prev.slice(-200), data]);
     });
 
     newSocket.on("hitl_request", (data: HitlRequest) => {
@@ -148,9 +284,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setCurrentGeneration(data.generation);
     });
 
-    newSocket.on("generation_complete", (_data: GenerationComplete) => {
-      // Reserved for future use
-    });
+    newSocket.on("generation_complete", (_data: GenerationComplete) => {});
 
     return () => {
       newSocket.disconnect();
@@ -178,6 +312,15 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     }
   }, [socket]);
 
+  const emitMfgAction = useCallback(
+    (agentId: string, actionType: string, params: Record<string, unknown> = {}) => {
+      if (socket) {
+        socket.emit("mfg_action", { agent_id: agentId, type: actionType, params });
+      }
+    },
+    [socket]
+  );
+
   const clearHitlRequest = useCallback(() => setHitlRequest(null), []);
 
   return (
@@ -185,6 +328,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       value={{
         socket,
         gameState,
+        mfgState,
+        mfgMetrics,
+        mfgAlerts,
         dagData,
         evolutionData,
         traces,
@@ -194,6 +340,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         emitHitlResponse,
         emitScenarioSelect,
         emitStartEvolution,
+        emitMfgAction,
         setIsRunning,
         clearHitlRequest,
       }}
