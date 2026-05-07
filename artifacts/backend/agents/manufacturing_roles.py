@@ -279,8 +279,16 @@ def _dispatch_planner_skill(
 
     elif action == "query_worker_status":
         worker_id = parameters.get("worker_id", "")
-        cache = _worker_state_cache.get(worker_id, {})
-        result = {"worker_id": worker_id, "cached_state": cache}
+        stage_name = worker_id.replace("worker_", "")
+        live_snap = _env.get_stage_snapshot(stage_name) if _env else {}
+        last_action_info = _worker_state_cache.get(worker_id, {})
+        result = {
+            "worker_id": worker_id,
+            "live_stage_snapshot": live_snap,
+            "last_action": last_action_info.get("last_action"),
+            "last_parameters": last_action_info.get("last_parameters"),
+            "skill_result": last_action_info.get("skill_result"),
+        }
         _planner_cache[agent_id] = {"query_worker_status": result, "fetched_at": time.time()}
         return f"Worker status for {worker_id} fetched."
 
