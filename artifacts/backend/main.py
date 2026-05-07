@@ -280,7 +280,11 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 dag_payload = _build_dag_update(orch_state, scenario)
                 await sio.emit("dag_update", dag_payload)
 
-                llm_traces = await run_manufacturing_v2_step(generation, env)
+                # Only run LLM step in llm policy mode; random/scripted
+                # must not have their action_buffers contaminated by LLM calls.
+                llm_traces: list[dict] = []
+                if active_run.get("policy", "scripted") == "llm":
+                    llm_traces = await run_manufacturing_v2_step(generation, env)
                 for trace in llm_traces:
                     payload = {
                         "run_id": run_id,

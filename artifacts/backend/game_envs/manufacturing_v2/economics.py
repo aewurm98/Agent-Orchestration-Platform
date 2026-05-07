@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .entities import (
-    Agent, AgentRole, Item, ItemType, Machine, MachineState,
+    Agent, AgentRole, AgentState, Item, ItemType, Machine, MachineState,
     ITEM_PURCHASE_COST, ITEM_SALE_PRICE, Order,
 )
 
@@ -205,7 +205,7 @@ class EconomicModel:
         total_agents = len(agents)
         idle_agents = sum(
             1 for a in agents.values()
-            if a.state in (AgentState_IDLE := "idle", "standby")
+            if a.state == AgentState.IDLE or a.state == AgentState.STANDBY
         )
         agent_idle_ratio = idle_agents / max(total_agents, 1)
 
