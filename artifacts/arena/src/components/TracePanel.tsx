@@ -103,6 +103,11 @@ export default function TracePanel() {
                 >
                   {trace.agent_role ?? trace.role}
                 </span>
+                {trace.agent_name && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#161b22] border border-[#30363d] text-[#8b949e]">
+                    {trace.agent_name}
+                  </span>
+                )}
                 {trace.stage && stageColor && (
                   <span
                     className="text-[10px] px-1.5 py-0.5 rounded border border-[#30363d]"
