@@ -506,21 +506,18 @@ async def start_evolution(sid: str, data: dict) -> None:
     print(f"Start evolution requested by {sid}")
 
 
-@sio.event
-async def mfg_set_speed(sid: str, data: dict) -> None:
+async def _handle_set_speed(sid: str, data: dict) -> None:
     multiplier = float(data.get("multiplier", 1.0))
     active_run["speed_multiplier"] = multiplier
     print(f"Manufacturing speed set to {multiplier}x")
 
 
-@sio.event
-async def mfg_pause(sid: str, data: dict) -> None:
+async def _handle_pause(sid: str, data: dict) -> None:
     active_run["running"] = False
     print(f"Manufacturing paused by {sid}")
 
 
-@sio.event
-async def mfg_resume(sid: str, data: dict) -> None:
+async def _handle_resume(sid: str, data: dict) -> None:
     global simulation_task
     if not active_run.get("running"):
         scenario = active_run.get("scenario", "manufacturing")
@@ -528,6 +525,38 @@ async def mfg_resume(sid: str, data: dict) -> None:
         active_run["running"] = True
         simulation_task = asyncio.create_task(simulation_loop(scenario, "autonomous", run_id))
     print(f"Manufacturing resumed by {sid}")
+
+
+# Spec-compliant event names
+@sio.event
+async def set_speed(sid: str, data: dict) -> None:
+    await _handle_set_speed(sid, data)
+
+
+@sio.event
+async def pause(sid: str, data: dict) -> None:
+    await _handle_pause(sid, data)
+
+
+@sio.event
+async def resume(sid: str, data: dict) -> None:
+    await _handle_resume(sid, data)
+
+
+# Legacy names kept for backward compatibility
+@sio.event
+async def mfg_set_speed(sid: str, data: dict) -> None:
+    await _handle_set_speed(sid, data)
+
+
+@sio.event
+async def mfg_pause(sid: str, data: dict) -> None:
+    await _handle_pause(sid, data)
+
+
+@sio.event
+async def mfg_resume(sid: str, data: dict) -> None:
+    await _handle_resume(sid, data)
 
 
 @sio.event

@@ -275,6 +275,8 @@ class Agent:
     ticks_on_action: int = 0
     forecast_cooldown: int = 0
     messages: list = field(default_factory=list)
+    # Planned path: list of (row, col) waypoints from A* pathfinding (for UI rendering)
+    planned_path: list = field(default_factory=list)
 
     def carry_capacity(self) -> int:
         return AGENT_CARRY_CAPACITY[self.role]
@@ -299,6 +301,8 @@ class Agent:
             "active_macro": self.active_macro,
             "wage_per_tick": round(self.wage_per_tick(), 2),
             "messages": self.messages[-3:],
+            # Planned path for UI: list of [row, col] waypoints
+            "path": [[r, c] for r, c in self.planned_path],
         }
 
 

@@ -146,37 +146,53 @@ function AgentStatusRow({ agents }: { agents: MfgGameState["agents"] }) {
   );
 }
 
+const SPEED_PRESETS: Array<{ label: string; mult: number }> = [
+  { label: "1x",  mult: 1 },
+  { label: "5x",  mult: 5 },
+  { label: "10x", mult: 10 },
+  { label: "Max", mult: 50 },
+];
+
 function SpeedControl() {
   const { socket } = useSocket();
 
   const setSpeed = (mult: number) => {
-    socket?.emit("mfg_set_speed", { multiplier: mult });
+    socket?.emit("set_speed", { multiplier: mult });
   };
 
-  const pause = () => {
-    socket?.emit("mfg_pause", {});
+  const doPause = () => {
+    socket?.emit("pause", {});
   };
 
-  const SPEEDS = [0.5, 1, 2, 4];
+  const doResume = () => {
+    socket?.emit("resume", {});
+  };
 
   return (
-    <div className="flex items-center gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
+    <div className="flex flex-wrap items-center gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
       <span className="text-[9px] font-mono text-[#8b949e] uppercase mr-1">Speed</span>
-      {SPEEDS.map((s) => (
+      {SPEED_PRESETS.map(({ label, mult }) => (
         <button
-          key={s}
-          onClick={() => setSpeed(s)}
+          key={label}
+          onClick={() => setSpeed(mult)}
           className="px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-[#30363d] text-[#8b949e] hover:text-[#00d9ff] hover:border-[#00d9ff] transition-colors"
         >
-          {s}x
+          {label}
         </button>
       ))}
       <button
-        onClick={pause}
-        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#30363d] text-[#8b949e] hover:text-[#f87171] hover:border-[#f87171] transition-colors ml-1"
+        onClick={doPause}
+        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#30363d] text-[#8b949e] hover:text-[#f87171] hover:border-[#f87171] transition-colors"
         title="Pause simulation"
       >
         ⏸
+      </button>
+      <button
+        onClick={doResume}
+        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#30363d] text-[#8b949e] hover:text-[#7ee787] hover:border-[#7ee787] transition-colors"
+        title="Resume simulation"
+      >
+        ▶
       </button>
     </div>
   );
