@@ -216,11 +216,19 @@ def _build_planner_context(agent_id: str) -> dict:
 
 # ── Skill dispatchers ────────────────────────────────────────────────────────
 
+_VALID_WORKER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in WORKER_SKILLS)
+_VALID_PLANNER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in PLANNER_SKILLS)
+
+
 def _dispatch_worker_skill(
     agent_id: str, stage_name: str, action: str, parameters: dict
 ) -> str:
     if _env is None:
         return "env not initialised"
+
+    if action not in _VALID_WORKER_ACTIONS:
+        log.warning("Worker %s chose unknown action %r — falling back to idle", agent_id, action)
+        return json.dumps({"ok": False, "error": f"unknown action '{action}'; valid: {sorted(_VALID_WORKER_ACTIONS)}"})
 
     if action == "process_batch":
         result = _env.process_batch(stage_name, parameters.get("quantity", 10))
@@ -271,6 +279,10 @@ def _dispatch_planner_skill(
 ) -> str:
     if _env is None:
         return "env not initialised"
+
+    if action not in _VALID_PLANNER_ACTIONS:
+        log.warning("Planner %s chose unknown action %r — falling back to query", agent_id, action)
+        return json.dumps({"ok": False, "error": f"unknown action '{action}'; valid: {sorted(_VALID_PLANNER_ACTIONS)}"})
 
     if action == "query_pipeline_status":
         result = _env.query_pipeline_status()
