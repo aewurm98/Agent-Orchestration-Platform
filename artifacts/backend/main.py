@@ -13,9 +13,8 @@ from agents.orchestrator import run_orchestrator, run_one_generation
 from game_envs.supply_chain import SupplyChainEnv
 from game_envs.disaster_relief import DisasterReliefEnv
 from game_envs.peer_agents import PeerAgentsEnv
+from game_envs.manufacturing import ManufacturingEnv
 from state.db import init_db, save_workflow, get_workflows, save_trace, get_traces, WorkflowIn, TraceIn
-
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
@@ -40,24 +39,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Canonical scenario keys used throughout the backend
 SCENARIOS: dict[str, type] = {
-    "supply_chain": SupplyChainEnv,
+    "supply_chain":    SupplyChainEnv,
     "disaster_relief": DisasterReliefEnv,
-    "peer_agents": PeerAgentsEnv,
+    "peer_agents":     PeerAgentsEnv,
+    "manufacturing":   ManufacturingEnv,
 }
 
-# Map human-readable labels (sent from the frontend selector) → canonical keys
 SCENARIO_LABEL_MAP: dict[str, str] = {
     "Supply Chain":    "supply_chain",
     "Disaster Relief": "disaster_relief",
     "Peer Agents":     "peer_agents",
+    "Manufacturing":   "manufacturing",
     "supply_chain":    "supply_chain",
     "disaster_relief": "disaster_relief",
     "peer_agents":     "peer_agents",
+    "manufacturing":   "manufacturing",
 }
 
-# Per-node metadata used to enrich dag_update payloads
 NODE_METADATA: dict[str, dict] = {
     "orchestrator": {
         "system_prompt": "You are the master orchestrator. Delegate tasks to worker agents and synthesise results to meet the scenario objective.",
@@ -83,9 +82,29 @@ NODE_METADATA: dict[str, dict] = {
         "system_prompt": "You forecast demand signals and route goods to high-priority destinations.",
         "tools": ["read_demand", "reroute_shipment", "update_forecast"],
     },
+    "planner_1": {
+        "system_prompt": "You oversee the full manufacturing pipeline. Balance WIP, prevent starvation and overflow, approve finished goods release.",
+        "tools": ["query_pipeline_status", "query_worker_status", "reallocate_materials",
+                  "set_production_target", "dispatch_order", "broadcast_to_stage",
+                  "approve_release", "escalate"],
+    },
+    "worker_raw_materials": {
+        "system_prompt": "You operate the Raw Materials stage. Maximize utilization, minimize idle ticks, flag problems early.",
+        "tools": ["process_batch", "inspect_input", "request_replenishment",
+                  "report_issue", "rework_output", "idle"],
+    },
+    "worker_intermediates": {
+        "system_prompt": "You operate the Intermediates stage. Maximize utilization, minimize idle ticks, flag problems early.",
+        "tools": ["process_batch", "inspect_input", "request_replenishment",
+                  "report_issue", "rework_output", "idle"],
+    },
+    "worker_finished_product": {
+        "system_prompt": "You operate the Finished Product stage. Maximize utilization, minimize idle ticks, flag problems early.",
+        "tools": ["process_batch", "inspect_input", "request_replenishment",
+                  "report_issue", "rework_output", "idle"],
+    },
 }
 
-# In-memory circular buffer of the last 3 actions per node (populated during simulation)
 _node_action_history: dict[str, list[str]] = {}
 
 active_run: dict[str, object] = {}
@@ -93,12 +112,10 @@ simulation_task: Optional[asyncio.Task] = None
 
 
 def _normalise_scenario(raw: str) -> str:
-    """Convert a human label or snake_case key to a canonical scenario key."""
     return SCENARIO_LABEL_MAP.get(raw, raw.lower().replace(" ", "_"))
 
 
 def _record_action(node_id: str, action: str) -> list[str]:
-    """Append action to the last-3 buffer for a node and return the buffer."""
     buf = _node_action_history.setdefault(node_id, [])
     buf.append(action)
     if len(buf) > 3:
@@ -107,19 +124,18 @@ def _record_action(node_id: str, action: str) -> list[str]:
 
 
 def _build_dag_update(orch_state: dict, scenario: str) -> dict:
-    """Convert LangGraph orchestrator state into a typed dag_update payload."""
     topology = orch_state.get("topology", {})
     topo_node_ids: list[str] = topology.get("nodes", [])
     topo_edges: list = topology.get("edges", [])
     generation: int = orch_state.get("generation", 0)
     fitness: float = orch_state.get("current_fitness", 0.0)
 
-    # Default roles when topology is not yet populated
     if not topo_node_ids:
         topo_node_ids = {
             "supply_chain":    ["orchestrator", "evaluator", "supply_agent", "demand_agent"],
             "disaster_relief": ["orchestrator", "evaluator", "worker_1", "worker_2"],
             "peer_agents":     ["orchestrator", "evaluator", "worker_1", "worker_2"],
+            "manufacturing":   ["planner_1", "worker_raw_materials", "worker_intermediates", "worker_finished_product"],
         }.get(scenario, ["orchestrator", "evaluator", "worker_1", "worker_2"])
 
     statuses = ["active", "idle", "evolved"]
@@ -131,14 +147,13 @@ def _build_dag_update(orch_state: dict, scenario: str) -> dict:
         dag_nodes.append({
             "id": role,
             "label": role.replace("_", " ").title(),
-            "status": "active" if role == "orchestrator" else random.choice(statuses),
+            "status": "active" if role in ("orchestrator", "planner_1") else random.choice(statuses),
             "ctx_util": round(random.uniform(0.3, 0.9), 2),
             "system_prompt": meta["system_prompt"],
             "tools": meta["tools"],
             "last_actions": last_actions,
         })
 
-    # Build edges from topology (tuples/lists) + enriched GRPO scores
     dag_edges = []
     for edge in topo_edges:
         if isinstance(edge, (list, tuple)) and len(edge) == 2:
@@ -159,33 +174,80 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     """
     Main simulation loop.
     - Game env ticks every 500 ms; emits game_state_update each tick.
-    - Every LANGGRAPH_TICK_INTERVAL ticks a LangGraph generation step runs and
-      emits dag_update, fitness_update, agent_thought, generation_complete.
+    - Every LANGGRAPH_TICK_INTERVAL ticks a LangGraph generation step runs.
     """
-    LANGGRAPH_TICK_INTERVAL = 5  # run LangGraph every 5 game ticks (2.5 s)
+    LANGGRAPH_TICK_INTERVAL = 5
 
     env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
     env = env_cls()
 
-    # ── Generation 0: full LangGraph episode (goal_intake → topology_init → one cycle)
-    orch_state: dict = await run_orchestrator(
-        scenario=scenario,
-        run_id=run_id,
-        max_generations=1,
-    )
+    # For manufacturing, share the env with the manufacturing roles module
+    if scenario == "manufacturing":
+        from agents import manufacturing_roles
+        from agents.manufacturing_roles import ALL_MANUFACTURING_AGENT_CONFIGS
+        manufacturing_roles.set_active_env(env)
+        # Skip the initial run_orchestrator (avoids blocking LLM calls at startup)
+        # and build the initial state directly so the game loop starts immediately.
+        orch_state: dict = {
+            "scenario": scenario,
+            "objective": "Maximise pipeline throughput across three manufacturing stages",
+            "agent_configs": list(ALL_MANUFACTURING_AGENT_CONFIGS),
+            "topology": {
+                "nodes": ["planner_1", "worker_raw_materials", "worker_intermediates", "worker_finished_product"],
+                "edges": [
+                    ("planner_1", "worker_raw_materials"),
+                    ("planner_1", "worker_intermediates"),
+                    ("planner_1", "worker_finished_product"),
+                    ("worker_raw_materials", "planner_1"),
+                    ("worker_intermediates", "planner_1"),
+                    ("worker_finished_product", "planner_1"),
+                ],
+            },
+            "current_fitness": 0.0,
+            "parent_fitness": 0.0,
+            "topology_diff": "+0/0 edges",
+            "latency": 0.0,
+            "cost": 0.0,
+            "generation": 0,
+            "max_generations": 999,
+            "hitl_pending": False,
+            "confidence": 1.0,
+            "edge_scores": {
+                "planner_1->worker_raw_materials": 0.8,
+                "planner_1->worker_intermediates": 0.8,
+                "planner_1->worker_finished_product": 0.8,
+                "worker_raw_materials->planner_1": 0.7,
+                "worker_intermediates->planner_1": 0.7,
+                "worker_finished_product->planner_1": 0.7,
+            },
+            "checkpoint_key": "",
+            "run_id": run_id,
+            "traces": [],
+        }
+    else:
+        orch_state: dict = await run_orchestrator(
+            scenario=scenario,
+            run_id=run_id,
+            max_generations=1,
+        )
 
     game_tick_counter = 0
+    trace_cursor = 0  # index into orch_state["traces"] — only emit new entries
 
     while active_run.get("running"):
-        # ── 500 ms game tick ───────────────────────────────────────────────
-        game_state = env.step(env.random_action())
-        await sio.emit("game_state_update", game_state.to_json())
+        # 500 ms game tick
+        if scenario == "manufacturing":
+            env.tick()
+            game_state = env.to_json()
+            await sio.emit("game_state_update", game_state)
+        else:
+            game_state = env.step(env.random_action())
+            await sio.emit("game_state_update", game_state.to_json())
         game_tick_counter += 1
 
         if not active_run.get("running"):
             break
 
-        # ── LangGraph generation step (every N ticks) ──────────────────────
         if game_tick_counter % LANGGRAPH_TICK_INTERVAL == 0:
             orch_state = await run_one_generation(orch_state)
 
@@ -197,10 +259,9 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
             mutation_type: str = (
                 orch_state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
-                if orch_state.get("agent_configs") else "semantic"
+                if orch_state.get("agent_configs") and scenario != "manufacturing" else "semantic"
             )
 
-            # fitness_update from LangGraph evaluate() output
             await sio.emit("fitness_update", {
                 "generation": generation,
                 "parent_fitness": round(parent_fitness, 4),
@@ -211,23 +272,28 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 "latency": round(latency, 3),
             })
 
-            # agent_thoughts — emit each trace individually with a short delay
-            # to give the TracePanel a visible streaming cadence
-            new_traces = orch_state.get("traces", [])[-4:]
+            # Emit only newly appended traces since last generation (cursor-based)
+            all_traces = orch_state.get("traces", [])
+            new_traces = all_traces[trace_cursor:]
+            trace_cursor = len(all_traces)
             for trace in new_traces:
-                await sio.emit("agent_thought", {
+                payload = {
                     "run_id": run_id,
                     "role": trace.get("role", "system"),
                     "content": trace.get("content", ""),
                     "timestamp": trace.get("timestamp", time.time()),
-                })
-                await asyncio.sleep(0.12)  # 120 ms between thoughts
+                }
+                # Pass through enriched manufacturing fields if present
+                for field in ("agent_name", "agent_role", "stage", "action", "parameters", "reasoning"):
+                    if field in trace:
+                        payload[field] = trace[field]
 
-            # dag_update built from LangGraph topology + metadata
+                await sio.emit("agent_thought", payload)
+                await asyncio.sleep(0.12)
+
             dag_payload = _build_dag_update(orch_state, scenario)
             await sio.emit("dag_update", dag_payload)
 
-            # generation_complete summary
             await sio.emit("generation_complete", {
                 "gen_id": generation,
                 "parent_fitness": round(parent_fitness, 4),
@@ -235,7 +301,6 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 "mutation_type": mutation_type,
             })
 
-            # Persist trace to DB
             await save_trace(TraceIn(
                 run_id=run_id,
                 generation=generation,
@@ -243,7 +308,6 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 content=f"Generation {generation} complete. Fitness: {current_fitness:.4f}",
             ))
 
-            # HITL: trigger if mode=hitl and confidence below threshold
             if mode == "hitl" and orch_state.get("hitl_pending"):
                 await sio.emit("hitl_request", {
                     "run_id": run_id,
@@ -254,7 +318,6 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 })
                 await asyncio.sleep(5)
 
-        # 500 ms cadence — one game tick per interval
         await asyncio.sleep(0.5)
 
 
@@ -306,7 +369,6 @@ async def save_current_workflow(payload: dict) -> dict:
 
 @app.post("/api/workflows/{workflow_id}/apply")
 async def apply_workflow(workflow_id: str) -> dict:
-    """Apply a saved workflow topology — returns its scenario so the frontend can start it."""
     from state.db import get_workflow_by_id
     wf = await get_workflow_by_id(workflow_id)
     if wf is None:

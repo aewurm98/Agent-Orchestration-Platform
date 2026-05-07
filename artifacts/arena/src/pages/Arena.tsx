@@ -70,6 +70,7 @@ export default function Arena() {
               <SelectItem value="Supply Chain">Supply Chain</SelectItem>
               <SelectItem value="Disaster Relief">Disaster Relief</SelectItem>
               <SelectItem value="Peer Agents">Peer Agents</SelectItem>
+              <SelectItem value="Manufacturing">Manufacturing</SelectItem>
             </SelectContent>
           </Select>
 
