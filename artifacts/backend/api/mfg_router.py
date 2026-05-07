@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from game_envs.manufacturing_v2.env import ManufacturingEnvV2
@@ -37,11 +37,6 @@ def set_env(env: ManufacturingEnvV2) -> None:
     _env = env
 
 
-class ResetRequest(BaseModel):
-    config: Optional[dict] = None
-    validate_connectivity: bool = True
-
-
 class StepRequest(BaseModel):
     # Accepts either:
     #   dict[str, dict]  — {agent_id: {type, params}}  (legacy format)
@@ -52,39 +47,36 @@ class StepRequest(BaseModel):
 class SpeedRequest(BaseModel):
     multiplier: float = 1.0
 
+# EnvironmentConfig top-level keys that distinguish a bare config from a wrapper
+_BARE_CONFIG_KEYS = frozenset({"grid_rows", "grid_cols", "machines", "agents", "scenario_name"})
+
 
 @router.post("/reset")
-async def reset(req: ResetRequest) -> dict:
+async def reset(request: Request) -> dict:
     """
     Accepts both call conventions:
-      { "config": {...}, "validate_connectivity": true }   ← wrapped (original)
-      { "grid_rows": 12, "machines": [...], ... }          ← bare EnvironmentConfig JSON
-    The bare form is detected when req.config is None but the raw body has
-    known EnvironmentConfig top-level keys (grid_rows / machines / agents).
-    In that case req itself (as a dict) is treated as the config.
+      { "config": {...}, "validate_connectivity": true }   ← wrapped (legacy)
+      { "grid_rows": 12, "machines": [...], ... }          ← bare EnvironmentConfig (spec)
+    Detection: if the body contains any EnvironmentConfig key (grid_rows, grid_cols,
+    machines, agents, scenario_name) it is treated as a bare config directly.
+    Otherwise the body is treated as a wrapper with optional "config" and
+    "validate_connectivity" fields.
     """
     global _env
-    config = req.config or FIRST_FACTORY_CONFIG
-    validate = req.validate_connectivity
+    body: dict = await request.json() if await request.body() else {}
+    if _BARE_CONFIG_KEYS & set(body.keys()):
+        # Bare EnvironmentConfig form
+        config = body
+        validate = True
+    else:
+        # Wrapped form: { config: {...}, validate_connectivity: bool }
+        config = body.get("config") or FIRST_FACTORY_CONFIG
+        validate = bool(body.get("validate_connectivity", True))
     if validate:
         ok, reason = ConnectivityValidator.validate_config(config)
         if not ok:
             raise HTTPException(status_code=400, detail=f"Invalid genome configuration: {reason}")
     _env = ManufacturingEnvV2(config)
-    return _env.to_json()
-
-
-@router.post("/reset/raw")
-async def reset_raw(body: dict) -> dict:
-    """
-    Accept a bare EnvironmentConfig JSON body (no wrapper object).
-    Equivalent to POST /reset with { "config": <body> }.
-    """
-    global _env
-    ok, reason = ConnectivityValidator.validate_config(body)
-    if not ok:
-        raise HTTPException(status_code=400, detail=f"Invalid genome configuration: {reason}")
-    _env = ManufacturingEnvV2(body)
     return _env.to_json()
 
 
