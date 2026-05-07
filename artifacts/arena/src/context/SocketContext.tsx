@@ -20,6 +20,12 @@ export type GameState = {
     backlog?: number;
     carrying_cost?: number;
     total_delivered?: number;
+    // manufacturing resources
+    raw_input?: number;
+    inter_input?: number;
+    finished_output?: number;
+    approved_finished?: number;
+    total_processed?: number;
   };
   score: number;
   tick: number;
@@ -52,6 +58,13 @@ export type AgentThought = {
   role: string;
   content: string;
   timestamp: number;
+  // enriched manufacturing fields (optional)
+  agent_name?: string;
+  agent_role?: string;
+  stage?: string | null;
+  action?: string;
+  parameters?: Record<string, unknown>;
+  reasoning?: string;
 };
 
 export type HitlRequest = {
@@ -133,7 +146,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     newSocket.on("generation_complete", (_data: GenerationComplete) => {
-      // Reserved for future use (e.g. toast notifications)
+      // Reserved for future use
     });
 
     return () => {
@@ -143,18 +156,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const emitHitlResponse = useCallback(
     (action: "approve" | "override" | "stop", constraint?: string) => {
-      if (socket) {
-        socket.emit("hitl_response", { action, constraint });
-      }
+      if (socket) socket.emit("hitl_response", { action, constraint });
     },
     [socket]
   );
 
   const emitScenarioSelect = useCallback(
     (scenario: string) => {
-      if (socket) {
-        socket.emit("scenario_select", { scenario });
-      }
+      if (socket) socket.emit("scenario_select", { scenario });
     },
     [socket]
   );
@@ -166,9 +175,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     }
   }, [socket]);
 
-  const clearHitlRequest = useCallback(() => {
-    setHitlRequest(null);
-  }, []);
+  const clearHitlRequest = useCallback(() => setHitlRequest(null), []);
 
   return (
     <SocketContext.Provider
