@@ -1,4 +1,5 @@
 import { useSocket } from "@/hooks/useSocket";
+import { useState, useEffect, useCallback } from "react";
 import type { MfgGameState, MfgMetrics } from "@/context/SocketContext";
 
 const MACHINE_STATE_COLOR: Record<string, string> = {
@@ -198,14 +199,40 @@ function SpeedControl() {
   );
 }
 
-function AlertFeed({ alerts }: { alerts: Array<{ type: string; event?: string; message?: string }> }) {
-  if (!alerts || alerts.length === 0) return null;
+interface AlertItem {
+  id: string;
+  type: string;
+  event?: string;
+  message?: string;
+}
+
+function ToastAlerts({ alerts }: { alerts: AlertItem[] }) {
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  const dismiss = useCallback((id: string) => {
+    setDismissed((prev) => new Set([...prev, id]));
+  }, []);
+
+  const visible = alerts.filter((a) => !dismissed.has(a.id)).slice(-5).reverse();
+  if (visible.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-0.5 max-h-[60px] overflow-y-auto p-1 rounded-lg border border-[#f8717133] bg-[#f8717108]">
-      {alerts.slice(-4).reverse().map((alert, i) => (
-        <div key={i} className="text-[9px] font-mono text-[#f87171]">
-          {alert.event ? `⚠ ${alert.event.replace(/_/g, " ")}` : alert.message ?? JSON.stringify(alert)}
+    <div className="flex flex-col gap-1">
+      {visible.map((alert) => (
+        <div
+          key={alert.id}
+          className="flex items-start justify-between gap-1 px-2 py-1 rounded border border-[#f8717144] bg-[#f8717110] animate-in fade-in"
+        >
+          <span className="text-[9px] font-mono text-[#f87171] leading-tight">
+            ⚠ {alert.event ? alert.event.replace(/_/g, " ") : (alert.message ?? JSON.stringify(alert))}
+          </span>
+          <button
+            onClick={() => dismiss(alert.id)}
+            className="text-[8px] font-mono text-[#f8717188] hover:text-[#f87171] shrink-0 leading-none pt-0.5"
+            title="Dismiss"
+          >
+            ✕
+          </button>
         </div>
       ))}
     </div>
@@ -215,6 +242,18 @@ function AlertFeed({ alerts }: { alerts: Array<{ type: string; event?: string; m
 export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
   const { mfgMetrics, mfgAlerts } = useSocket();
   const metrics = mfgMetrics;
+
+  // Assign stable IDs to alerts so toast dismissal works correctly
+  const [alertsWithIds, setAlertsWithIds] = useState<AlertItem[]>([]);
+  useEffect(() => {
+    if (!mfgAlerts) return;
+    setAlertsWithIds(
+      mfgAlerts.map((a, i) => ({
+        ...a,
+        id: `${i}-${a.event ?? a.message ?? ""}`,
+      }))
+    );
+  }, [mfgAlerts]);
 
   const simProgress = state.simulation_length
     ? Math.min((state.tick / state.simulation_length) * 100, 100)
@@ -290,10 +329,10 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
         <SpeedControl />
       </div>
 
-      {/* Alerts */}
-      {mfgAlerts && mfgAlerts.length > 0 && (
+      {/* Dismissible toast alerts */}
+      {alertsWithIds.length > 0 && (
         <div className="shrink-0">
-          <AlertFeed alerts={mfgAlerts} />
+          <ToastAlerts alerts={alertsWithIds} />
         </div>
       )}
 

@@ -267,13 +267,39 @@ class ScriptedGreedyPolicy(BasePolicy):
 
 
 class LLMPolicy(BasePolicy):
-    """Defers to the LLM agents in manufacturing_roles.py (async, called per generation)."""
+    """
+    LLM-augmented policy for Manufacturing v2.
+
+    Architecture:
+    - The simulation_loop calls run_manufacturing_v2_step() asynchronously every
+      LANGGRAPH_TICK_INTERVAL ticks.  That coroutine uses _call_llm_v2 to get
+      actions for management_1 and procurement_1, then injects them into each
+      agent's action_buffer.
+    - On every tick, get_all_actions() drains the action_buffer for agents that
+      have queued LLM actions; for all other agents it falls back to
+      ScriptedGreedyPolicy so the factory keeps running between LLM calls.
+    """
+
+    def __init__(self):
+        self._fallback = ScriptedGreedyPolicy()
 
     def get_action(self, agent_id: str, observation: dict, world: "WorldModel") -> dict:
-        return {"type": "wait", "params": {}}
+        agent = world.agents.get(agent_id)
+        if agent and agent.action_buffer:
+            return agent.action_buffer.pop(0)
+        return self._fallback.get_action(agent_id, observation, world)
 
     def get_all_actions(self, world: "WorldModel") -> dict[str, dict]:
-        return {}
+        actions: dict[str, dict] = {}
+        for agent_id, agent in world.agents.items():
+            if agent.is_standby:
+                continue
+            if agent.action_buffer:
+                actions[agent_id] = agent.action_buffer.pop(0)
+            else:
+                obs = world.get_observation(agent_id)
+                actions[agent_id] = self._fallback.get_action(agent_id, obs, world)
+        return actions
 
 
 POLICY_REGISTRY: dict[str, type] = {

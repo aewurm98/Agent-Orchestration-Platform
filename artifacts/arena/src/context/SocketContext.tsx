@@ -42,6 +42,7 @@ export type MfgV2Agent = {
   active_macro: string | null;
   wage_per_tick: number;
   messages: Array<unknown>;
+  path: Array<[number, number]>;
 };
 
 export type MfgV2Machine = {
