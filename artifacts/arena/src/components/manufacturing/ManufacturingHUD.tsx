@@ -39,10 +39,10 @@ function Bar({ value, max, color }: { value: number; max: number; color: string 
   );
 }
 
-function BudgetPanel({ budget, metrics }: { budget: number; metrics: MfgMetrics | null }) {
-  const startingBudget = 8000;
-  const pct = Math.min((budget / startingBudget) * 100, 100);
-  const budgetColor = budget > 4000 ? "#7ee787" : budget > 2000 ? "#f59e0b" : "#f87171";
+function BudgetPanel({ budget, startingBudget, metrics }: { budget: number; startingBudget: number; metrics: MfgMetrics | null }) {
+  const base = startingBudget > 0 ? startingBudget : 8000;
+  const pct = Math.min((budget / base) * 100, 100);
+  const budgetColor = budget > base * 0.5 ? "#7ee787" : budget > base * 0.25 ? "#f59e0b" : "#f87171";
 
   return (
     <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
@@ -52,7 +52,7 @@ function BudgetPanel({ budget, metrics }: { budget: number; metrics: MfgMetrics 
           ${budget.toLocaleString(undefined, { maximumFractionDigits: 0 })}
         </span>
       </div>
-      <Bar value={budget} max={startingBudget} color={budgetColor} />
+      <Bar value={budget} max={base} color={budgetColor} />
       {metrics && (
         <div className="flex gap-2 text-[9px] font-mono text-[#8b949e]">
           <span>Profit: <span style={{ color: metrics.current_profit >= 0 ? "#7ee787" : "#f87171" }}>
@@ -296,7 +296,7 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
 
       {/* Budget */}
       <div className="shrink-0">
-        <BudgetPanel budget={state.budget ?? 0} metrics={metrics} />
+        <BudgetPanel budget={state.budget ?? 0} startingBudget={state.starting_budget ?? 8000} metrics={metrics} />
       </div>
 
       {/* Metrics row */}
