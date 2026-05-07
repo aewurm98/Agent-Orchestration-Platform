@@ -20,6 +20,11 @@ export type GameState = {
     backlog?: number;
     carrying_cost?: number;
     total_delivered?: number;
+    raw_input?: number;
+    inter_input?: number;
+    finished_output?: number;
+    approved_finished?: number;
+    total_processed?: number;
   };
   score: number;
   tick: number;
@@ -52,6 +57,13 @@ export type AgentThought = {
   role: string;
   content: string;
   timestamp: number;
+  // Enriched manufacturing fields (optional)
+  agent_name?: string;
+  agent_role?: string;
+  stage?: string;
+  action?: string;
+  parameters?: Record<string, unknown>;
+  reasoning?: string;
 };
 
 export type HitlRequest = {

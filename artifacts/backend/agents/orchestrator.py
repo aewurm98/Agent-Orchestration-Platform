@@ -49,11 +49,11 @@ class ArenaState(TypedDict):
 
 def goal_intake(state: ArenaState) -> ArenaState:
     """Parse scenario and set high-level objective."""
-    # STUB: replace with LLM call to parse and clarify objective
     objective_map = {
-        "supply_chain": "Minimise stockout rate while reducing carrying cost",
+        "supply_chain":    "Minimise stockout rate while reducing carrying cost",
         "disaster_relief": "Maximise survivor rescue rate within 24 simulated hours",
-        "peer_agents": "Achieve Nash equilibrium in multi-agent resource allocation",
+        "peer_agents":     "Achieve Nash equilibrium in multi-agent resource allocation",
+        "manufacturing":   "Maximise pipeline throughput across three manufacturing stages",
     }
     state["objective"] = objective_map.get(state["scenario"], "Optimise agent performance")
     state["traces"] = state.get("traces", []) + [{
@@ -66,28 +66,50 @@ def goal_intake(state: ArenaState) -> ArenaState:
 
 def topology_init(state: ArenaState) -> ArenaState:
     """Initialise the agent graph topology from Taguchi L9 sample."""
-    # STUB: replace with LLM call to design initial topology
-    sample_configs = TaguchiL9Sample({
-        "model": ["claude-3-haiku", "claude-3-sonnet", "claude-3-5-sonnet"],
-        "temperature": [0.3, 0.7, 1.0],
-        "max_tokens": [512, 1024, 2048],
-    })
-    state["agent_configs"] = sample_configs[:3]
-    state["topology"] = {
-        "nodes": ["orchestrator", "evaluator", "worker_1", "worker_2"],
-        "edges": [
-            ("orchestrator", "evaluator"),
-            ("orchestrator", "worker_1"),
-            ("orchestrator", "worker_2"),
-            ("evaluator", "orchestrator"),
-        ],
-    }
-    state["edge_scores"] = {
-        "orchestrator->evaluator": 0.8,
-        "orchestrator->worker_1": 0.6,
-        "orchestrator->worker_2": 0.5,
-        "evaluator->orchestrator": 0.9,
-    }
+    if state.get("scenario") == "manufacturing":
+        from agents.manufacturing_roles import ALL_MANUFACTURING_AGENT_CONFIGS
+        state["agent_configs"] = list(ALL_MANUFACTURING_AGENT_CONFIGS)
+        state["topology"] = {
+            "nodes": ["planner_1", "worker_raw_materials", "worker_intermediates", "worker_finished_product"],
+            "edges": [
+                ("planner_1", "worker_raw_materials"),
+                ("planner_1", "worker_intermediates"),
+                ("planner_1", "worker_finished_product"),
+                ("worker_raw_materials", "planner_1"),
+                ("worker_intermediates", "planner_1"),
+                ("worker_finished_product", "planner_1"),
+            ],
+        }
+        state["edge_scores"] = {
+            "planner_1->worker_raw_materials": 0.8,
+            "planner_1->worker_intermediates": 0.8,
+            "planner_1->worker_finished_product": 0.8,
+            "worker_raw_materials->planner_1": 0.7,
+            "worker_intermediates->planner_1": 0.7,
+            "worker_finished_product->planner_1": 0.7,
+        }
+    else:
+        sample_configs = TaguchiL9Sample({
+            "model": ["claude-3-haiku", "claude-3-sonnet", "claude-3-5-sonnet"],
+            "temperature": [0.3, 0.7, 1.0],
+            "max_tokens": [512, 1024, 2048],
+        })
+        state["agent_configs"] = sample_configs[:3]
+        state["topology"] = {
+            "nodes": ["orchestrator", "evaluator", "worker_1", "worker_2"],
+            "edges": [
+                ("orchestrator", "evaluator"),
+                ("orchestrator", "worker_1"),
+                ("orchestrator", "worker_2"),
+                ("evaluator", "orchestrator"),
+            ],
+        }
+        state["edge_scores"] = {
+            "orchestrator->evaluator": 0.8,
+            "orchestrator->worker_1": 0.6,
+            "orchestrator->worker_2": 0.5,
+            "evaluator->orchestrator": 0.9,
+        }
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
         "content": f"Topology initialised with {len(state['topology']['nodes'])} agents",
@@ -96,11 +118,17 @@ def topology_init(state: ArenaState) -> ArenaState:
     return state
 
 
-def agent_step(state: ArenaState) -> ArenaState:
+async def agent_step(state: ArenaState) -> ArenaState:
     """Run one tick of the active agent population."""
-    # STUB: replace with LLM call for each active agent
-    for _cfg in state.get("agent_configs", []):
-        pass  # agents would take actions here
+    if state.get("scenario") == "manufacturing":
+        from agents.manufacturing_roles import run_manufacturing_step
+        generation = state.get("generation", 0)
+        new_traces = await run_manufacturing_step(generation)
+        state["traces"] = state.get("traces", []) + new_traces
+    else:
+        # Stub for other scenarios — future LLM integration
+        for _cfg in state.get("agent_configs", []):
+            pass
 
     state["traces"] = state.get("traces", []) + [{
         "role": "orchestrator",
@@ -112,10 +140,15 @@ def agent_step(state: ArenaState) -> ArenaState:
 
 def evaluate(state: ArenaState) -> ArenaState:
     """Score generation with CLEAR fitness function."""
-    # STUB: replace with LLM call for evaluator agent
     latency = random.uniform(0.2, 1.5)
     cost = random.uniform(0.001, 0.05)
     success_rate = random.uniform(0.3, 0.95)
+
+    if state.get("scenario") == "manufacturing":
+        from agents import manufacturing_roles
+        if manufacturing_roles._env is not None:
+            success_rate = manufacturing_roles._env.get_objective_value()
+
     fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
     state["parent_fitness"] = state.get("current_fitness", 0.0)
     state["current_fitness"] = round(fitness, 4)
@@ -148,9 +181,13 @@ def hitl_gate(state: ArenaState) -> ArenaState:
 def mutate(state: ArenaState) -> ArenaState:
     """Apply semantic mutation + Graph-GRPO edge pruning."""
     before_edge_count = len(state.get("topology", {}).get("edges", []))
-    for i, cfg in enumerate(state.get("agent_configs", [])):
-        # STUB: replace with LLM call for semantic mutation
-        state["agent_configs"][i] = SemanticMutation(cfg)
+
+    if state.get("scenario") == "manufacturing":
+        # For manufacturing, skip mutating agent_configs (they're role definitions, not GA candidates)
+        pass
+    else:
+        for i, cfg in enumerate(state.get("agent_configs", [])):
+            state["agent_configs"][i] = SemanticMutation(cfg)
 
     pruned = GraphGRPOPrune(state["topology"], state["edge_scores"])
     state["topology"] = pruned
@@ -168,16 +205,14 @@ def mutate(state: ArenaState) -> ArenaState:
 
 def checkpoint(state: ArenaState) -> ArenaState:
     """Serialize state snapshot; wire Redis here when ready."""
-    # STUB: replace with Redis snapshot
     key = f"arena:{state.get('run_id', 'default')}:gen:{state.get('generation', 0)}"
     state["checkpoint_key"] = key
-    # Log this generation using the correct GenerationLog schema
     GenerationLog(
         gen_id=state.get("generation", 0),
         parent_fitness=state.get("parent_fitness", 0.0),
         child_fitness=state.get("current_fitness", 0.0),
         mutation_type=state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
-        if state.get("agent_configs") else "semantic",
+        if state.get("agent_configs") and state["scenario"] != "manufacturing" else "semantic",
         topology_diff=state.get("topology_diff", "+0/0 edges"),
     )
     return state
@@ -188,12 +223,10 @@ def checkpoint(state: ArenaState) -> ArenaState:
 # ---------------------------------------------------------------------------
 
 def _hitl_route(state: ArenaState) -> str:
-    """Route after hitl_gate: pause for human or continue to mutate."""
     return "hitl" if state.get("hitl_pending") else "continue"
 
 
 def _continue_route(state: ArenaState) -> str:
-    """Route after checkpoint: stop at max generations or loop back."""
     if state.get("generation", 0) >= state.get("max_generations", 10):
         return "done"
     return "next"
@@ -234,9 +267,7 @@ def _build_full_graph() -> StateGraph:
 
 
 def _build_step_graph() -> StateGraph:
-    """Single-generation graph: agent_step → evaluate → hitl_gate → mutate/checkpoint → END.
-    Used when the topology is already initialised (subsequent generations).
-    """
+    """Single-generation graph: agent_step → evaluate → hitl_gate → mutate/checkpoint → END."""
     graph = StateGraph(ArenaState)
 
     graph.add_node("agent_step", agent_step)
@@ -300,11 +331,7 @@ async def run_orchestrator(
 
 
 async def run_one_generation(existing_state: dict) -> dict:
-    """Run a single LangGraph generation cycle from agent_step onwards.
-
-    Accepts a previously returned state dict and returns the updated state.
-    This avoids re-running goal_intake/topology_init on every generation.
-    """
+    """Run a single LangGraph generation cycle from agent_step onwards."""
     graph = _build_step_graph()
     result = await graph.ainvoke(
         existing_state,
