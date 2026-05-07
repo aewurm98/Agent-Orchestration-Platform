@@ -57,8 +57,8 @@ export default function EvoDashboard() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {recentRecords.map((record) => (
-                <TableRow key={record.generation} className="border-[#30363d] hover:bg-[#30363d]/30">
+              {recentRecords.map((record, i) => (
+                <TableRow key={`${record.generation}-${i}`} className="border-[#30363d] hover:bg-[#30363d]/30">
                   <TableCell className="font-mono text-xs text-[#e6edf3]">{record.generation}</TableCell>
                   <TableCell className="font-mono text-xs text-[#00d9ff]">{record.best_fitness}</TableCell>
                   <TableCell className="text-xs">
