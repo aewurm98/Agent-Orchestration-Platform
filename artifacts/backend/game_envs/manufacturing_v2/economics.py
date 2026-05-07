@@ -118,8 +118,12 @@ class EconomicModel:
         self._pending_alerts: list[dict] = []
 
     def deduct_wages(self, agents: dict[str, Agent]) -> None:
+        from .entities import AgentState
         for agent in agents.values():
             cost = agent.wage_per_tick()
+            # Idle agents earn 50% wage (spec requirement)
+            if agent.state == AgentState.IDLE:
+                cost *= 0.5
             self.budget -= cost
             self.pl.labor_costs += cost
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .world import WorldModel
-from .entities import CellType, MachineType, AgentRole, SpeedMode
+from .entities import CellType, MachineType, AgentRole, SpeedMode, MachineState, Item, ItemType
 from .scenarios import FIRST_FACTORY_CONFIG
 from .economics import MetricsSnapshot
 
@@ -50,6 +50,40 @@ class ManufacturingEnvV2:
                 col=a_cfg["col"],
             )
 
+        # Pre-load items into machines / floor to seed the pipeline
+        for item_cfg in config.get("preloaded_items", []):
+            itype = item_cfg["type"]
+            if isinstance(itype, str):
+                itype = ItemType(itype)
+            item = Item(
+                id=item_cfg["id"],
+                item_type=itype,
+                row=item_cfg.get("row"),
+                col=item_cfg.get("col"),
+                carrier_id=item_cfg.get("carrier_id"),
+            )
+            world.items[item.id] = item
+            machine_id = item_cfg.get("in_machine")
+            if machine_id:
+                m = world.machines.get(machine_id)
+                if m:
+                    queue = item_cfg.get("queue", "input")
+                    if queue == "output":
+                        m.output_queue.append(item)
+                    else:
+                        m.input_queue.append(item)
+
+        # Apply initial machine state overrides
+        for m_init in config.get("initial_machine_states", []):
+            m = world.machines.get(m_init["id"])
+            if m:
+                state_val = m_init.get("state", MachineState.IDLE)
+                if isinstance(state_val, str):
+                    state_val = MachineState(state_val)
+                m.state = state_val
+                if "processing_ticks_remaining" in m_init:
+                    m.processing_ticks_remaining = int(m_init["processing_ticks_remaining"])
+
         return world
 
     def reset(self, config: Optional[dict] = None) -> dict:
@@ -58,8 +92,23 @@ class ManufacturingEnvV2:
         self.world = self._build_world(self._config)
         return self.world.to_json()
 
-    def step(self, actions: Optional[dict[str, dict]] = None) -> dict:
-        result = self.world.tick_advance(actions)
+    def step(self, actions: Optional[Any] = None) -> dict:
+        """
+        Advance one tick. Accepts:
+          - dict[str, dict]  — {agent_id: {type, params}}
+          - list of dicts    — [{agent_id, type, params}]
+          - None             — policy-free tick
+        """
+        actions_dict: Optional[dict] = None
+        if isinstance(actions, dict):
+            actions_dict = actions
+        elif isinstance(actions, list):
+            actions_dict = {
+                a["agent_id"]: {"type": a.get("type", "wait"), "params": a.get("params", {})}
+                for a in actions
+                if "agent_id" in a
+            }
+        result = self.world.tick_advance(actions_dict)
         state = self.world.to_json()
         state["_tick_result"] = result
         return state

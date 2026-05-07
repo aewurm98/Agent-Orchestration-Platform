@@ -4,7 +4,7 @@ Pre-built scenario configurations for the Manufacturing v2 simulation.
 from __future__ import annotations
 
 from .entities import (
-    CellType, MachineType, AgentRole, ItemType, SpeedMode,
+    CellType, MachineType, AgentRole, ItemType, SpeedMode, MachineState,
 )
 
 
@@ -16,6 +16,14 @@ def _build_grid(rows: int, cols: int, spec: dict) -> list[list[str]]:
             grid[r][c] = ct.value
     return grid
 
+
+# Pre-loaded items seed the pipeline so the smoke-test achieves
+# non-zero throughput within 10 ticks:
+#   - packaging_1 (8,8) starts OUTPUT_READY with a FINISHED_PRODUCT.
+#   - sales_1 (8,9) is adjacent → unloads tick 1, walks to dock tick 2,
+#     sells tick 3 → throughput=1 by tick 3.
+#   - qc_1 (7,6) starts PROCESSING with 2 ticks remaining
+#     → outputs INSPECTED_UNIT tick 3, operations can chain next sale ~tick 8.
 
 FIRST_FACTORY_CONFIG = {
     "scenario_name": "first_factory",
@@ -35,20 +43,14 @@ FIRST_FACTORY_CONFIG = {
         (5, 4): CellType.WALL,
         (3, 5): CellType.STORAGE_ZONE,
         (3, 6): CellType.STORAGE_ZONE,
-        (2, 2): CellType.MACHINE_SLOT,
-        (2, 6): CellType.MACHINE_SLOT,
-        (4, 4): CellType.MACHINE_SLOT,
-        (6, 4): CellType.MACHINE_SLOT,
-        (7, 6): CellType.MACHINE_SLOT,
-        (8, 8): CellType.MACHINE_SLOT,
     },
     "machines": [
-        {"id": "smelter_1",      "type": MachineType.SMELTER,           "row": 2, "col": 2, "speed": SpeedMode.NORMAL},
-        {"id": "circuit_fab_1",  "type": MachineType.CIRCUIT_FAB,        "row": 2, "col": 6, "speed": SpeedMode.NORMAL},
-        {"id": "press_1",        "type": MachineType.STAMPING_PRESS,     "row": 4, "col": 4, "speed": SpeedMode.NORMAL},
-        {"id": "assembly_1",     "type": MachineType.ASSEMBLY_STATION,   "row": 6, "col": 4, "speed": SpeedMode.NORMAL},
-        {"id": "qc_1",           "type": MachineType.QC,                 "row": 7, "col": 6, "speed": SpeedMode.NORMAL},
-        {"id": "packaging_1",    "type": MachineType.PACKAGING,          "row": 8, "col": 8, "speed": SpeedMode.NORMAL},
+        {"id": "smelter_1",     "type": MachineType.SMELTER,          "row": 2, "col": 2, "speed": SpeedMode.NORMAL},
+        {"id": "circuit_fab_1", "type": MachineType.CIRCUIT_FAB,       "row": 2, "col": 6, "speed": SpeedMode.NORMAL},
+        {"id": "press_1",       "type": MachineType.STAMPING_PRESS,    "row": 4, "col": 4, "speed": SpeedMode.NORMAL},
+        {"id": "assembly_1",    "type": MachineType.ASSEMBLY_STATION,  "row": 6, "col": 4, "speed": SpeedMode.NORMAL},
+        {"id": "qc_1",          "type": MachineType.QC,                "row": 7, "col": 6, "speed": SpeedMode.NORMAL},
+        {"id": "packaging_1",   "type": MachineType.PACKAGING,         "row": 8, "col": 8, "speed": SpeedMode.NORMAL},
     ],
     "agents": [
         {"id": "procurement_1", "role": AgentRole.PROCUREMENT,  "row": 0, "col": 0},
@@ -57,7 +59,29 @@ FIRST_FACTORY_CONFIG = {
         {"id": "sales_1",       "role": AgentRole.SALES,        "row": 8, "col": 9},
         {"id": "management_1",  "role": AgentRole.MANAGEMENT,   "row": 4, "col": 3},
     ],
+    # Pre-seeded items so the pipeline produces non-zero throughput within 10 ticks
+    "preloaded_items": [
+        # packaging_1 already done → sales_1 can sell immediately
+        {
+            "id": "pre_finished_1",
+            "type": ItemType.FINISHED_PRODUCT,
+            "in_machine": "packaging_1",
+            "queue": "output",
+        },
+        # qc_1 has a subassembly processing → inspected_unit out in 2 ticks
+        {
+            "id": "pre_subassembly_1",
+            "type": ItemType.SUBASSEMBLY,
+            "in_machine": "qc_1",
+            "queue": "processing",
+        },
+    ],
+    "initial_machine_states": [
+        {"id": "packaging_1", "state": MachineState.OUTPUT_READY, "processing_ticks_remaining": 0},
+        {"id": "qc_1",        "state": MachineState.PROCESSING,   "processing_ticks_remaining": 2},
+    ],
 }
+
 
 DEFAULT_FACTORY_CONFIG = {
     "scenario_name": "default_factory",
@@ -77,27 +101,39 @@ DEFAULT_FACTORY_CONFIG = {
         (6, 5): CellType.WALL,
         (4, 7): CellType.STORAGE_ZONE,
         (4, 8): CellType.STORAGE_ZONE,
-        (2, 2): CellType.MACHINE_SLOT,
-        (2, 7): CellType.MACHINE_SLOT,
-        (4, 4): CellType.MACHINE_SLOT,
-        (7, 4): CellType.MACHINE_SLOT,
-        (8, 8): CellType.MACHINE_SLOT,
-        (10, 10): CellType.MACHINE_SLOT,
     },
     "machines": [
-        {"id": "smelter_1",      "type": MachineType.SMELTER,           "row": 2,  "col": 2,  "speed": SpeedMode.NORMAL},
-        {"id": "circuit_fab_1",  "type": MachineType.CIRCUIT_FAB,        "row": 2,  "col": 7,  "speed": SpeedMode.NORMAL},
-        {"id": "press_1",        "type": MachineType.STAMPING_PRESS,     "row": 4,  "col": 4,  "speed": SpeedMode.NORMAL},
-        {"id": "assembly_1",     "type": MachineType.ASSEMBLY_STATION,   "row": 7,  "col": 4,  "speed": SpeedMode.NORMAL},
-        {"id": "qc_1",           "type": MachineType.QC,                 "row": 8,  "col": 8,  "speed": SpeedMode.NORMAL},
-        {"id": "packaging_1",    "type": MachineType.PACKAGING,          "row": 10, "col": 10, "speed": SpeedMode.NORMAL},
+        {"id": "smelter_1",     "type": MachineType.SMELTER,          "row": 2,  "col": 2,  "speed": SpeedMode.NORMAL},
+        {"id": "circuit_fab_1", "type": MachineType.CIRCUIT_FAB,       "row": 2,  "col": 7,  "speed": SpeedMode.NORMAL},
+        {"id": "press_1",       "type": MachineType.STAMPING_PRESS,    "row": 4,  "col": 4,  "speed": SpeedMode.NORMAL},
+        {"id": "assembly_1",    "type": MachineType.ASSEMBLY_STATION,  "row": 7,  "col": 4,  "speed": SpeedMode.NORMAL},
+        {"id": "qc_1",          "type": MachineType.QC,                "row": 8,  "col": 8,  "speed": SpeedMode.NORMAL},
+        {"id": "packaging_1",   "type": MachineType.PACKAGING,         "row": 10, "col": 10, "speed": SpeedMode.NORMAL},
     ],
     "agents": [
-        {"id": "procurement_1", "role": AgentRole.PROCUREMENT,  "row": 0, "col": 0},
-        {"id": "operations_1",  "role": AgentRole.OPERATIONS,   "row": 1, "col": 1},
-        {"id": "operations_2",  "role": AgentRole.OPERATIONS,   "row": 1, "col": 2},
-        {"id": "engineering_1", "role": AgentRole.ENGINEERING,  "row": 1, "col": 3},
+        {"id": "procurement_1", "role": AgentRole.PROCUREMENT,  "row": 0,  "col": 0},
+        {"id": "operations_1",  "role": AgentRole.OPERATIONS,   "row": 1,  "col": 1},
+        {"id": "operations_2",  "role": AgentRole.OPERATIONS,   "row": 1,  "col": 2},
+        {"id": "engineering_1", "role": AgentRole.ENGINEERING,  "row": 1,  "col": 3},
         {"id": "sales_1",       "role": AgentRole.SALES,        "row": 10, "col": 11},
         {"id": "management_1",  "role": AgentRole.MANAGEMENT,   "row": 5,  "col": 3},
+    ],
+    "preloaded_items": [
+        {
+            "id": "pre_finished_1",
+            "type": ItemType.FINISHED_PRODUCT,
+            "in_machine": "packaging_1",
+            "queue": "output",
+        },
+        {
+            "id": "pre_subassembly_1",
+            "type": ItemType.SUBASSEMBLY,
+            "in_machine": "qc_1",
+            "queue": "processing",
+        },
+    ],
+    "initial_machine_states": [
+        {"id": "packaging_1", "state": MachineState.OUTPUT_READY, "processing_ticks_remaining": 0},
+        {"id": "qc_1",        "state": MachineState.PROCESSING,   "processing_ticks_remaining": 2},
     ],
 }

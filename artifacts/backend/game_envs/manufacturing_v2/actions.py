@@ -549,4 +549,38 @@ def decompose_macro_action(
         steps.append({"type": "unload_machine", "params": {"machine_id": machine_id}})
         return steps
 
+    elif macro_type == "work_machine":
+        """
+        Navigate to adjacent floor cell next to machine, then:
+          - If OUTPUT_READY → unload_machine
+          - If IDLE/LOADING with inputs → start_machine
+          - Else → wait
+        """
+        machine_id = params.get("machine_id")
+        machine = machines.get(machine_id)
+        if machine is None:
+            return [{"type": "wait", "params": {}}]
+        WALKABLE = {CellType.FLOOR, CellType.CONVEYOR, CellType.LOADING_DOCK,
+                    CellType.SHIPPING_DOCK, CellType.STORAGE_ZONE}
+        adj = [
+            (machine.row + dr, machine.col + dc)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            if (0 <= machine.row + dr < ROWS and 0 <= machine.col + dc < COLS
+                and grid[machine.row + dr][machine.col + dc] in WALKABLE)
+        ]
+        if not adj:
+            return [{"type": "wait", "params": {}}]
+        best_adj = min(adj, key=lambda rc: abs(rc[0] - agent.row) + abs(rc[1] - agent.col))
+        path = astar(grid, (agent.row, agent.col), best_adj, occupied)
+        agent.planned_path = list(path)
+        steps = _path_to_steps(path, agent.row, agent.col)
+        # Terminal action depends on machine state at planning time
+        if machine.state == MachineState.OUTPUT_READY:
+            steps.append({"type": "unload_machine", "params": {"machine_id": machine_id}})
+        elif machine.state in (MachineState.IDLE, MachineState.LOADING) and machine.input_queue:
+            steps.append({"type": "start_machine", "params": {"machine_id": machine_id}})
+        else:
+            steps.append({"type": "wait", "params": {}})
+        return steps
+
     return [{"type": "wait", "params": {}}]

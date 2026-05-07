@@ -405,6 +405,7 @@ class WorldModel:
 
     def to_json(self) -> dict:
         metrics = self.economy.snapshot(self.tick, self.agents, self.machines)
+        orders_list = [o.to_dict() for o in self._active_orders]
         return {
             "scenario": "manufacturing",
             "tick": self.tick,
@@ -417,7 +418,10 @@ class WorldModel:
             # Include ALL items: floor items (carrier_id=None) AND carried items
             "items": [i.to_dict() for i in self.items.values()],
             "budget": round(self.economy.budget, 2),
-            "active_orders": [o.to_dict() for o in self._active_orders],
+            # Spec-compliant field name
+            "orders": orders_list,
+            # Backward-compat alias
+            "active_orders": orders_list,
             "metrics": metrics.to_dict(),
             "fitness": metrics.fitness_scalar(),
             "score": metrics.fitness_scalar(),

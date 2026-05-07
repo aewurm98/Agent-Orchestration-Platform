@@ -43,7 +43,10 @@ class ResetRequest(BaseModel):
 
 
 class StepRequest(BaseModel):
-    actions: Optional[dict[str, dict]] = None
+    # Accepts either:
+    #   dict[str, dict]  — {agent_id: {type, params}}  (legacy format)
+    #   list[dict]       — [{agent_id, type, params}]   (spec format)
+    actions: Optional[Any] = None
 
 
 class SpeedRequest(BaseModel):
