@@ -385,19 +385,24 @@ class WorldModel:
         }
 
     def get_action_space(self, agent_id: str) -> list[str]:
+        """Return only actions that are fully implemented in apply_micro_action."""
         agent = self.agents.get(agent_id)
         if not agent:
             return []
         role = agent.role
-        common = ["wait", "move", "broadcast"]
+        # "broadcast", "idle" are valid no-ops but not useful for planning; include them.
+        # Removed from every role: any action whose elif branch doesn't exist or returns
+        # "Unknown action" (stockpile, request_help, install_machine, remove_machine,
+        # negotiate_price, forecast_demand, set_budget_allocation, approve_purchase).
+        common = ["wait", "move", "broadcast", "idle"]
         role_actions: dict[AgentRole, list[str]] = {
-            AgentRole.PROCUREMENT:  ["purchase", "pickup", "drop", "stockpile", "check_prices"],
-            AgentRole.OPERATIONS:   ["pickup", "drop", "load_machine", "unload_machine", "start_machine", "request_help"],
-            AgentRole.ENGINEERING:  ["repair", "set_speed", "install_machine", "remove_machine", "diagnose"],
-            AgentRole.SALES:        ["sell", "pickup", "drop", "check_orders", "negotiate_price", "forecast_demand"],
-            AgentRole.MANAGEMENT:   ["hire", "fire", "assign_task", "set_budget_allocation", "view_financials", "approve_purchase"],
+            AgentRole.PROCUREMENT:  ["purchase", "pickup", "drop", "check_prices"],
+            AgentRole.OPERATIONS:   ["pickup", "drop", "load_machine", "unload_machine", "start_machine"],
+            AgentRole.ENGINEERING:  ["repair", "set_speed", "diagnose"],
+            AgentRole.SALES:        ["sell", "pickup", "drop", "check_orders"],
+            AgentRole.MANAGEMENT:   ["hire", "fire", "assign_task", "view_financials"],
         }
-        macro = ["go_to", "pickup_nearest", "deliver_to", "deliver_to_machine", "unload_machine"]
+        macro = ["go_to", "pickup_nearest", "deliver_to", "deliver_to_machine", "work_machine"]
         return common + role_actions.get(role, []) + macro
 
     def get_state_json(self) -> dict:

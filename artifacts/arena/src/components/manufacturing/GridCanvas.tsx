@@ -166,25 +166,106 @@ function drawMachine(
     ctx.fillRect(barX, barY, barW * pct, barH);
   }
 
-  if (machine.input_queue_len > 0 || machine.output_queue_len > 0) {
+  // Queue-length bar indicators (left = input amber, right = output green)
+  const maxQ = 4;
+  const barAreaH = Math.max(3, h * 0.08);
+  const barY = y + 3;
+  const barW = (w - 8) / 2 - 1;
+  // Input queue bar (left side, amber)
+  if (machine.input_queue_len > 0) {
+    ctx.fillStyle = "#21262d";
+    ctx.fillRect(x + 4, barY, barW, barAreaH);
     ctx.fillStyle = "#f59e0b";
-    ctx.font = `bold ${Math.min(w, h) * 0.22}px monospace`;
+    ctx.fillRect(x + 4, barY, barW * Math.min(machine.input_queue_len / maxQ, 1), barAreaH);
+    // Digit label
+    ctx.fillStyle = "#f59e0b";
+    ctx.font = `bold ${Math.max(6, Math.min(w, h) * 0.18)}px monospace`;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(`${machine.input_queue_len}→`, x + 3, y + 3);
+    ctx.fillText(`${machine.input_queue_len}`, x + 4, barY + barAreaH + 1);
   }
+  // Output queue bar (right side, green)
   if (machine.output_queue_len > 0) {
+    const barX2 = x + w - 4 - barW;
+    ctx.fillStyle = "#21262d";
+    ctx.fillRect(barX2, barY, barW, barAreaH);
     ctx.fillStyle = "#7ee787";
-    ctx.font = `bold ${Math.min(w, h) * 0.22}px monospace`;
+    ctx.fillRect(barX2, barY, barW * Math.min(machine.output_queue_len / maxQ, 1), barAreaH);
+    ctx.fillStyle = "#7ee787";
+    ctx.font = `bold ${Math.max(6, Math.min(w, h) * 0.18)}px monospace`;
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
-    ctx.fillText(`→${machine.output_queue_len}`, x + w - 3, y + 3);
+    ctx.fillText(`${machine.output_queue_len}`, x + w - 4, barY + barAreaH + 1);
   }
+}
+
+function drawAgentPath(
+  ctx: CanvasRenderingContext2D,
+  path: Array<[number, number]>,
+  agentRow: number,
+  agentCol: number,
+  cellW: number,
+  cellH: number,
+  color: string,
+) {
+  if (!path || path.length === 0) return;
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([3, 4]);
+  ctx.beginPath();
+  ctx.moveTo(agentCol * cellW + cellW / 2, agentRow * cellH + cellH / 2);
+  for (const [pr, pc] of path.slice(0, 6)) {
+    ctx.lineTo(pc * cellW + cellW / 2, pr * cellH + cellH / 2);
+  }
+  ctx.stroke();
+  // Draw destination dot
+  const [destR, destC] = path[path.length > 5 ? 5 : path.length - 1];
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(destC * cellW + cellW / 2, destR * cellH + cellH / 2, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawDirectionArrow(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  nextRow: number,
+  nextCol: number,
+  agentRow: number,
+  agentCol: number,
+  color: string,
+) {
+  const dr = nextRow - agentRow;
+  const dc = nextCol - agentCol;
+  if (dr === 0 && dc === 0) return;
+  const angle = Math.atan2(dr, dc);
+  const arrowLen = r * 1.1;
+  const ax = cx + Math.cos(angle) * (r + 2);
+  const ay = cy + Math.sin(angle) * (r + 2);
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + Math.cos(angle) * r * 0.4, cy + Math.sin(angle) * r * 0.4);
+  ctx.lineTo(ax, ay);
+  // Arrow head
+  ctx.lineTo(ax - Math.cos(angle - 0.4) * 3, ay - Math.sin(angle - 0.4) * 3);
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - Math.cos(angle + 0.4) * 3, ay - Math.sin(angle + 0.4) * 3);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawAgent(
   ctx: CanvasRenderingContext2D,
-  agent: { role: string; row: number; col: number; state: string; inventory_count: number },
+  agent: { role: string; row: number; col: number; state: string; inventory_count: number; path?: Array<[number, number]> },
   x: number,
   y: number,
   w: number,
@@ -230,6 +311,12 @@ function drawAgent(
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.fillText(`${agent.inventory_count}`, cx, y + h - 1);
+  }
+
+  // Direction arrow pointing toward first path step
+  if (agent.path && agent.path.length > 0) {
+    const [nextR, nextC] = agent.path[0];
+    drawDirectionArrow(ctx, cx, cy, r + 2, nextR, nextC, agent.row, agent.col, color);
   }
 }
 
@@ -328,12 +415,20 @@ export default function GridCanvas({ state }: { state: MfgGameState }) {
           const offsets = [[-1,-1],[1,-1],[-1,1],[1,1],[0,0]];
           cellItems.slice(0, 4).forEach((item, i) => {
             const [ox, oy] = offsets[i] ?? [0, 0];
-            drawItem(ctx, item, x, y, cellW, cellH, ox, oy);
+            drawItem(ctx, item as { type: string; row: number; col: number }, x, y, cellW, cellH, ox, oy);
           });
         }
       }
 
       if (state.agents) {
+        // First pass: draw planned paths (behind agents)
+        for (const agent of Object.values(state.agents)) {
+          const color = AGENT_COLOR[agent.role] ?? "#e6edf3";
+          if (agent.path && agent.path.length > 0) {
+            drawAgentPath(ctx, agent.path, agent.row, agent.col, cellW, cellH, color);
+          }
+        }
+        // Second pass: draw agents on top
         for (const agent of Object.values(state.agents)) {
           const x = agent.col * cellW;
           const y = agent.row * cellH;
