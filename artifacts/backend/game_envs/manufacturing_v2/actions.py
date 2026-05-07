@@ -87,7 +87,30 @@ def adjacent_cells(row: int, col: int) -> list[tuple[int, int]]:
 
 
 def is_adjacent(row1: int, col1: int, row2: int, col2: int) -> bool:
-    return (abs(row1 - row2) + abs(col1 - col2)) == 1
+    return abs(row1 - row2) + abs(col1 - col2) == 1
+
+
+def _path_to_steps(path: list[tuple[int, int]], start_row: int, start_col: int) -> list[dict]:
+    """
+    Convert an A* path (list of (row,col) NOT including start) to micro move actions.
+    Advances a cursor through the path, so each direction is computed from the
+    previous position — never from the original agent position.
+    """
+    steps: list[dict] = []
+    cur_r, cur_c = start_row, start_col
+    for (pr, pc) in path:
+        dr = pr - cur_r
+        dc = pc - cur_c
+        if dr == -1:
+            steps.append({"type": "move", "params": {"direction": "north"}})
+        elif dr == 1:
+            steps.append({"type": "move", "params": {"direction": "south"}})
+        elif dc == -1:
+            steps.append({"type": "move", "params": {"direction": "west"}})
+        elif dc == 1:
+            steps.append({"type": "move", "params": {"direction": "east"}})
+        cur_r, cur_c = pr, pc
+    return steps
 
 
 def apply_micro_action(
@@ -433,6 +456,10 @@ def decompose_macro_action(
     """
     Decompose a macro-action into a list of micro-action dicts.
     Returns list of {type, params} micro-actions to queue on the agent.
+
+    IMPORTANT: direction computation always advances a (cur_r, cur_c) cursor
+    through the path — never reuses the original agent position — so each
+    step direction is computed relative to the previous step.
     """
     ROWS = len(grid)
     COLS = len(grid[0]) if ROWS else 0
@@ -442,15 +469,9 @@ def decompose_macro_action(
         target_row = params.get("row", agent.row)
         target_col = params.get("col", agent.col)
         path = astar(grid, (agent.row, agent.col), (target_row, target_col), occupied)
-        steps = []
-        for (pr, pc) in path:
-            dr = pr - agent.row
-            dc = pc - agent.col
-            if dr == -1: steps.append({"type": "move", "params": {"direction": "north"}})
-            elif dr == 1: steps.append({"type": "move", "params": {"direction": "south"}})
-            elif dc == -1: steps.append({"type": "move", "params": {"direction": "west"}})
-            elif dc == 1: steps.append({"type": "move", "params": {"direction": "east"}})
-        return steps
+        # Update agent's planned_path for UI rendering
+        agent.planned_path = list(path)
+        return _path_to_steps(path, agent.row, agent.col)
 
     elif macro_type == "pickup_nearest":
         item_type_str = params.get("item_type")
@@ -470,16 +491,8 @@ def decompose_macro_action(
         if best is None:
             return [{"type": "wait", "params": {}}]
         path = astar(grid, (agent.row, agent.col), (best.row, best.col), occupied)
-        steps = []
-        cur_r, cur_c = agent.row, agent.col
-        for (pr, pc) in path:
-            dr = pr - cur_r
-            dc = pc - cur_c
-            if dr == -1: steps.append({"type": "move", "params": {"direction": "north"}})
-            elif dr == 1: steps.append({"type": "move", "params": {"direction": "south"}})
-            elif dc == -1: steps.append({"type": "move", "params": {"direction": "west"}})
-            elif dc == 1: steps.append({"type": "move", "params": {"direction": "east"}})
-            cur_r, cur_c = pr, pc
+        agent.planned_path = list(path)
+        steps = _path_to_steps(path, agent.row, agent.col)
         steps.append({"type": "pickup", "params": {"item_id": best.id}})
         return steps
 
@@ -487,14 +500,8 @@ def decompose_macro_action(
         target_row = params.get("row", agent.row)
         target_col = params.get("col", agent.col)
         path = astar(grid, (agent.row, agent.col), (target_row, target_col), occupied)
-        steps = []
-        for (pr, pc) in path:
-            dr = pr - agent.row
-            dc = pc - agent.col
-            if dr == -1: steps.append({"type": "move", "params": {"direction": "north"}})
-            elif dr == 1: steps.append({"type": "move", "params": {"direction": "south"}})
-            elif dc == -1: steps.append({"type": "move", "params": {"direction": "west"}})
-            elif dc == 1: steps.append({"type": "move", "params": {"direction": "east"}})
+        agent.planned_path = list(path)
+        steps = _path_to_steps(path, agent.row, agent.col)
         steps.append({"type": "drop", "params": {}})
         return steps
 
@@ -503,25 +510,43 @@ def decompose_macro_action(
         machine = machines.get(machine_id)
         if machine is None:
             return [{"type": "wait", "params": {}}]
-        adj = [(machine.row - 1, machine.col), (machine.row + 1, machine.col),
-               (machine.row, machine.col - 1), (machine.row, machine.col + 1)]
         WALKABLE = {CellType.FLOOR, CellType.CONVEYOR, CellType.LOADING_DOCK,
                     CellType.SHIPPING_DOCK, CellType.STORAGE_ZONE}
-        adj = [(r, c) for r, c in adj
-               if 0 <= r < ROWS and 0 <= c < COLS and grid[r][c] in WALKABLE]
+        adj = [
+            (machine.row + dr, machine.col + dc)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            if (0 <= machine.row + dr < ROWS and 0 <= machine.col + dc < COLS
+                and grid[machine.row + dr][machine.col + dc] in WALKABLE)
+        ]
         if not adj:
             return [{"type": "wait", "params": {}}]
-        best_adj = min(adj, key=lambda rc: abs(rc[0]-agent.row)+abs(rc[1]-agent.col))
+        best_adj = min(adj, key=lambda rc: abs(rc[0] - agent.row) + abs(rc[1] - agent.col))
         path = astar(grid, (agent.row, agent.col), best_adj, occupied)
-        steps = []
-        for (pr, pc) in path:
-            dr = pr - agent.row
-            dc = pc - agent.col
-            if dr == -1: steps.append({"type": "move", "params": {"direction": "north"}})
-            elif dr == 1: steps.append({"type": "move", "params": {"direction": "south"}})
-            elif dc == -1: steps.append({"type": "move", "params": {"direction": "west"}})
-            elif dc == 1: steps.append({"type": "move", "params": {"direction": "east"}})
+        agent.planned_path = list(path)
+        steps = _path_to_steps(path, agent.row, agent.col)
         steps.append({"type": "load_machine", "params": {"machine_id": machine_id}})
+        return steps
+
+    elif macro_type == "unload_machine":
+        machine_id = params.get("machine_id")
+        machine = machines.get(machine_id)
+        if machine is None:
+            return [{"type": "wait", "params": {}}]
+        WALKABLE = {CellType.FLOOR, CellType.CONVEYOR, CellType.LOADING_DOCK,
+                    CellType.SHIPPING_DOCK, CellType.STORAGE_ZONE}
+        adj = [
+            (machine.row + dr, machine.col + dc)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            if (0 <= machine.row + dr < ROWS and 0 <= machine.col + dc < COLS
+                and grid[machine.row + dr][machine.col + dc] in WALKABLE)
+        ]
+        if not adj:
+            return [{"type": "wait", "params": {}}]
+        best_adj = min(adj, key=lambda rc: abs(rc[0] - agent.row) + abs(rc[1] - agent.col))
+        path = astar(grid, (agent.row, agent.col), best_adj, occupied)
+        agent.planned_path = list(path)
+        steps = _path_to_steps(path, agent.row, agent.col)
+        steps.append({"type": "unload_machine", "params": {"machine_id": machine_id}})
         return steps
 
     return [{"type": "wait", "params": {}}]

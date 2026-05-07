@@ -5,6 +5,7 @@ Manages the grid, entities, tick processing, and serialization.
 """
 from __future__ import annotations
 
+import math
 import random
 import uuid
 from typing import Any, Optional
@@ -34,6 +35,8 @@ class WorldModel:
         self.cols = grid_cols
         self.simulation_length = simulation_length
         self.order_arrival_rate = order_arrival_rate
+        # "sync"           — deterministic serial order (alphabetical agent id)
+        # "async_buffered" — agents execute in random order each tick
         self.execution_mode = execution_mode
 
         self.rng = random.Random(random_seed)
@@ -61,6 +64,11 @@ class WorldModel:
 
         self._order_counter = 0
         self._price_fluctuation: float = 0.0
+
+        # Poisson inter-arrival: draw first arrival tick at construction
+        self._next_order_tick: float = float(self.rng.expovariate(1.0 / max(order_arrival_rate, 1)))
+
+    # ── Grid / entity setup ───────────────────────────────────────────────────
 
     def set_cell(self, row: int, col: int, cell_type: CellType) -> None:
         self.grid[row][col] = cell_type
@@ -95,9 +103,18 @@ class WorldModel:
         self.agents[agent_id] = a
         return a
 
+    # ── Core tick loop ────────────────────────────────────────────────────────
+
     def tick_advance(self, submitted_actions: Optional[dict[str, dict]] = None) -> dict:
         """
-        Advance world by one tick. submitted_actions: {agent_id: {type, params}}
+        Advance world by one tick.
+
+        submitted_actions: {agent_id: {type, params}}
+
+        execution_mode:
+          "sync"           — agents act in deterministic alphabetical order
+          "async_buffered" — agents act in random shuffled order (default)
+
         Returns: dict with alerts, action_results for this tick.
         """
         if self.done or self._paused:
@@ -119,7 +136,6 @@ class WorldModel:
         # ── 2. Process machine ticks ──────────────────────────────────────────
         for machine in self.machines.values():
             if machine.state == MachineState.LOADING:
-                from .recipes import RecipeEngine
                 if self.recipe_engine.can_start(machine):
                     self.recipe_engine.start_processing(machine)
                 else:
@@ -128,15 +144,23 @@ class WorldModel:
             for item in produced:
                 self.items[item.id] = item
 
-        # ── 3. Apply agent actions ────────────────────────────────────────────
-        action_order = list(self.agents.keys())
-        self.rng.shuffle(action_order)
+        # ── 3. Determine action order based on execution_mode ─────────────────
+        if self.execution_mode == "sync":
+            action_order = sorted(self.agents.keys())
+        else:
+            action_order = list(self.agents.keys())
+            self.rng.shuffle(action_order)
 
+        # ── 4. Apply agent actions ────────────────────────────────────────────
         for agent_id in action_order:
             agent = self.agents[agent_id]
             if agent.is_standby:
                 agent.state = AgentState.STANDBY
                 continue
+
+            # Expire completed planned_path each step
+            if agent.planned_path and not agent.action_buffer:
+                agent.planned_path = []
 
             action: Optional[dict] = None
 
@@ -146,7 +170,7 @@ class WorldModel:
                 raw = submitted_actions[agent_id]
                 if raw.get("type") in (
                     "go_to", "pickup_nearest", "deliver_to",
-                    "deliver_to_machine", "work_machine"
+                    "deliver_to_machine", "unload_machine", "work_machine"
                 ):
                     steps = decompose_macro_action(
                         agent, raw["type"],
@@ -230,15 +254,19 @@ class WorldModel:
                 "message": result.message,
             })
 
-        # ── 4. Deduct running costs ────────────────────────────────────────────
+        # ── 5. Deduct running costs ────────────────────────────────────────────
         self.economy.deduct_wages(self.agents)
         self.economy.deduct_power(self.machines)
 
-        # ── 5. Order arrivals ──────────────────────────────────────────────────
-        if self.tick % self.order_arrival_rate == 0:
+        # ── 6. Poisson order arrivals ─────────────────────────────────────────
+        # Use exponential inter-arrival times to model a Poisson process.
+        # Spawn all orders whose inter-arrival time falls within this tick.
+        while self.tick >= self._next_order_tick:
             self._spawn_order()
+            inter = self.rng.expovariate(1.0 / max(self.order_arrival_rate, 1))
+            self._next_order_tick += inter
 
-        # ── 6. Check expired orders ────────────────────────────────────────────
+        # ── 7. Check expired orders ────────────────────────────────────────────
         newly_missed = [o for o in self._active_orders if o.is_expired(self.tick)]
         for o in newly_missed:
             self.economy.record_order_missed()
@@ -251,22 +279,23 @@ class WorldModel:
                 "deadline": o.deadline_tick,
             })
 
-        # ── 7. Budget warning ──────────────────────────────────────────────────
+        # ── 8. Budget warning ──────────────────────────────────────────────────
         warn = self.economy.check_budget_warning()
         if warn:
             alerts.append(warn)
 
-        # ── 8. Check terminal conditions ───────────────────────────────────────
+        # ── 9. Check terminal conditions ───────────────────────────────────────
         if self.tick >= self.simulation_length or self.economy.budget <= 0:
             self.done = True
 
-        # ── 9. Price fluctuation ───────────────────────────────────────────────
-        import math
+        # ── 10. Price fluctuation ──────────────────────────────────────────────
         self._price_fluctuation = math.sin(self.tick / 30.0) * 10.0
 
         self._pending_alerts = alerts
         self._action_results = action_results
         return {"alerts": alerts, "action_results": action_results}
+
+    # ── Order / economy helpers ────────────────────────────────────────────────
 
     def _find_open_order(self) -> Optional[Order]:
         for o in self._active_orders:
@@ -326,6 +355,8 @@ class WorldModel:
                     return (r, c)
         return (self.rows - 1, self.cols - 1)
 
+    # ── Observation / serialisation ───────────────────────────────────────────
+
     def get_observation(self, agent_id: str) -> dict:
         agent = self.agents.get(agent_id)
         if not agent:
@@ -366,7 +397,7 @@ class WorldModel:
             AgentRole.SALES:        ["sell", "pickup", "drop", "check_orders", "negotiate_price", "forecast_demand"],
             AgentRole.MANAGEMENT:   ["hire", "fire", "assign_task", "set_budget_allocation", "view_financials", "approve_purchase"],
         }
-        macro = ["go_to", "pickup_nearest", "deliver_to", "deliver_to_machine"]
+        macro = ["go_to", "pickup_nearest", "deliver_to", "deliver_to_machine", "unload_machine"]
         return common + role_actions.get(role, []) + macro
 
     def get_state_json(self) -> dict:
@@ -383,7 +414,8 @@ class WorldModel:
             "grid_cols": self.cols,
             "agents": {aid: a.to_dict() for aid, a in self.agents.items()},
             "machines": {mid: m.to_dict() for mid, m in self.machines.items()},
-            "items": [i.to_dict() for i in self.items.values() if i.carrier_id is None],
+            # Include ALL items: floor items (carrier_id=None) AND carried items
+            "items": [i.to_dict() for i in self.items.values()],
             "budget": round(self.economy.budget, 2),
             "active_orders": [o.to_dict() for o in self._active_orders],
             "metrics": metrics.to_dict(),
@@ -403,8 +435,11 @@ class WorldModel:
 
     def connectivity_valid(self) -> tuple[bool, str]:
         """
-        BFS check: all machine cells must be reachable from a Loading Dock,
-        and at least one Shipping Dock must be reachable.
+        BFS from all Loading Dock cells.
+        Checks:
+          1. All machines have at least one reachable adjacent walkable cell.
+          2. At least one Shipping Dock is reachable.
+          3. All agent spawn positions are reachable (agents cannot be trapped).
         """
         from collections import deque
 
@@ -442,6 +477,7 @@ class WorldModel:
                 elif cell == CellType.MACHINE_SLOT:
                     visited.add((nr, nc))
 
+        # 1. Machine reachability
         machine_unreachable = []
         for m in self.machines.values():
             adj_reachable = any(
@@ -454,11 +490,21 @@ class WorldModel:
         if machine_unreachable:
             return False, f"Machines unreachable: {machine_unreachable}"
 
+        # 2. Shipping dock reachability
         shipping_reachable = any(
             self.grid[r][c] == CellType.SHIPPING_DOCK
             for (r, c) in visited
         )
         if not shipping_reachable:
             return False, "Shipping Dock unreachable from Loading Dock"
+
+        # 3. Agent spawn positions not trapped
+        trapped_agents = []
+        for agent in self.agents.values():
+            if (agent.row, agent.col) not in visited:
+                trapped_agents.append(agent.id)
+
+        if trapped_agents:
+            return False, f"Agents trapped (not reachable from Loading Dock): {trapped_agents}"
 
         return True, "OK"

@@ -218,3 +218,7 @@ class ManufacturingEnvLegacy:
             "score": self.get_objective_value(),
             "tick": self._tick,
         }
+
+
+# ── Alias: ManufacturingEnv → grid-based v2 engine ───────────────────────────
+from game_envs.manufacturing_v2 import ManufacturingEnvV2 as ManufacturingEnv  # noqa: E402
