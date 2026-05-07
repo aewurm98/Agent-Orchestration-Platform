@@ -234,8 +234,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     newSocket.on("game_state_update", (data: unknown) => {
       const d = data as Record<string, unknown>;
       if (d.scenario === "manufacturing" && d.grid) {
+        // Manufacturing state update — populate mfg UI, clear non-mfg state
         setMfgState(d as unknown as MfgGameState);
+        setGameState(null);
       } else {
+        // Non-manufacturing scenario — clear mfg state so it doesn't bleed in
+        setMfgState(null);
+        setMfgMetrics(null);
+        setMfgAlerts([]);
         setGameState(data as GameState);
       }
     });
