@@ -244,6 +244,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             game_state = env.to_json()
 
             await sio.emit("game_state_update", game_state)
+            # tick_update intentionally sends full state (same payload as
+            # game_state_update) for real-time frontend rendering.  Headless
+            # EA/API consumers should use POST /api/mfg/step which returns a
+            # proper protocol-minimal delta instead.
             await sio.emit("tick_update", game_state)
 
             for alert in tick_result.get("alerts", []):

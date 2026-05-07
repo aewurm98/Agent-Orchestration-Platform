@@ -423,6 +423,7 @@ class WorldModel:
             # Include ALL items: floor items (carrier_id=None) AND carried items
             "items": [i.to_dict() for i in self.items.values()],
             "budget": round(self.economy.budget, 2),
+            "starting_budget": round(self.economy.starting_budget, 2),
             # Spec-compliant field name
             "orders": orders_list,
             # Backward-compat alias

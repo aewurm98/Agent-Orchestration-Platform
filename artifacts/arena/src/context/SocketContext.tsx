@@ -121,6 +121,7 @@ export type MfgGameState = {
   machines: Record<string, MfgV2Machine>;
   items: MfgV2Item[];
   budget: number;
+  starting_budget: number;
   active_orders: MfgOrder[];
   metrics: MfgMetrics;
   fitness: number;
