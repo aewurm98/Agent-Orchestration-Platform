@@ -202,7 +202,8 @@ def _build_planner_context(agent_id: str) -> dict:
     if _env is None:
         return {}
     inbox = _read_inbox(agent_id)
-    last_query = _planner_cache.get(agent_id, {})
+    # Consume query cache on read (previous-tick-only semantics, mirrors inbox behaviour)
+    last_query = _planner_cache.pop(agent_id, {})
     targets = {}
     for sname in ["raw_materials", "intermediates", "finished_product"]:
         snap = _env.get_stage_snapshot(sname)
