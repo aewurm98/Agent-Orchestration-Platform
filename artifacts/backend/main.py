@@ -232,6 +232,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         )
 
     game_tick_counter = 0
+    trace_cursor = 0  # index into orch_state["traces"] — only emit new entries
 
     while active_run.get("running"):
         # 500 ms game tick
@@ -271,8 +272,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 "latency": round(latency, 3),
             })
 
-            # Emit enriched traces — manufacturing traces carry extra fields
-            new_traces = orch_state.get("traces", [])[-8:]
+            # Emit only newly appended traces since last generation (cursor-based)
+            all_traces = orch_state.get("traces", [])
+            new_traces = all_traces[trace_cursor:]
+            trace_cursor = len(all_traces)
             for trace in new_traces:
                 payload = {
                     "run_id": run_id,
