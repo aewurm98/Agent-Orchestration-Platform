@@ -1,11 +1,11 @@
 """
-Manufacturing agent roles: Worker and Planner, each powered by gpt-4o-mini.
+Manufacturing agent roles: LLM-powered agents for both legacy (3-stage) and v2 (grid) environments.
 
-Workers see only their own stage.
-Planners start with limited visibility and must invoke query skills.
+Workers see only their own stage (legacy) or their visibility radius (v2).
+Planners/Management agents have broader context.
 
 Module-level singletons hold env reference, message board, and planner query cache.
-Call set_active_env(env) before each simulation run.
+Call set_active_env(env) for legacy mode, set_active_env_v2(env) for grid mode.
 """
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ import json
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
 
 from openai import AsyncOpenAI
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from game_envs.manufacturing_v2.env import ManufacturingEnvV2
 
-# ── Replit-managed OpenAI client (lazy singleton) ────────────────────────────
+log = logging.getLogger(__name__)
 
 _openai_client: AsyncOpenAI | None = None
 
@@ -44,24 +45,27 @@ def _get_openai_client() -> AsyncOpenAI:
             )
     return _openai_client
 
-# ── Module-level shared state ────────────────────────────────────────────────
+_env = None
+_env_v2: Optional["ManufacturingEnvV2"] = None
 
-_env = None  # ManufacturingEnv instance, set by main.py
-
-# per-agent inbox: agent_id -> list of message dicts
 _message_board: dict[str, list[dict]] = {}
-
-# planner query cache: planner_id -> last query result dict
 _planner_cache: dict[str, dict] = {}
-
-# worker last state cache: worker_id -> last state dict (for planner queries)
 _worker_state_cache: dict[str, dict] = {}
 
 
 def set_active_env(env) -> None:
     global _env, _openai_client
     _env = env
-    _openai_client = None  # reset so client re-reads env vars on next call
+    _openai_client = None
+    _message_board.clear()
+    _planner_cache.clear()
+    _worker_state_cache.clear()
+
+
+def set_active_env_v2(env: "ManufacturingEnvV2") -> None:
+    global _env_v2, _openai_client
+    _env_v2 = env
+    _openai_client = None
     _message_board.clear()
     _planner_cache.clear()
     _worker_state_cache.clear()
@@ -73,11 +77,172 @@ def _post_to_inbox(agent_id: str, message: dict) -> None:
 
 def _read_inbox(agent_id: str) -> list[dict]:
     msgs = _message_board.get(agent_id, [])
-    _message_board[agent_id] = []  # clear on read
+    _message_board[agent_id] = []
     return msgs
 
 
-# ── Incentive strings ────────────────────────────────────────────────────────
+ROLE_INCENTIVES = {
+    "procurement": (
+        "You are a Procurement agent on a factory floor grid. "
+        "Your goal: purchase raw materials (raw_ore, raw_silicon) from the Loading Dock, "
+        "carry them to machines that need inputs, and manage budget efficiently. "
+        "Monitor which machines need inputs and prioritize accordingly. "
+        "Available actions: purchase, pickup, drop, deliver_to_machine, go_to, wait."
+    ),
+    "operations": (
+        "You are an Operations/Floor Worker on a factory floor grid. "
+        "Your goal: move items between machines, load machines with inputs, unload finished outputs, "
+        "and keep production flowing. Pick up items and deliver them to the right machines. "
+        "Available actions: pickup, drop, load_machine, unload_machine, start_machine, go_to, pickup_nearest, deliver_to_machine, wait."
+    ),
+    "engineering": (
+        "You are an Engineering/Maintenance agent on a factory floor grid. "
+        "Your goal: repair broken machines immediately, diagnose machines at risk of failure, "
+        "and optimize machine speed settings based on production bottlenecks. "
+        "Available actions: repair, set_speed, diagnose, go_to, wait."
+    ),
+    "sales": (
+        "You are a Sales agent on a factory floor grid. "
+        "Your goal: collect finished products from the Packaging machine output, "
+        "carry them to the Shipping Dock, and sell them. Check orders regularly. "
+        "Available actions: sell, pickup, drop, pickup_nearest, go_to, check_orders, wait."
+    ),
+    "management": (
+        "You are a Management agent with full map visibility. "
+        "Your goal: make strategic decisions — hire agents when bottlenecked, "
+        "fire idle agents to save budget, assign tasks, view financials, "
+        "and optimize machine speeds at key bottlenecks. "
+        "Available actions: hire, fire, assign_task, view_financials, set_budget_allocation, wait."
+    ),
+}
+
+_RESPONSE_SCHEMA = """
+Respond with a single JSON object:
+{
+  "action": "<action_name>",
+  "params": { ... },
+  "reasoning": "<one or two sentence explanation>"
+}
+Only use actions from the provided list. Do not add extra keys.
+"""
+
+
+async def _call_llm_v2(
+    agent_id: str,
+    role: str,
+    observation: dict,
+    available_actions: list[str],
+) -> dict:
+    incentive = ROLE_INCENTIVES.get(role, "You are a factory agent. Act to maximize production efficiency.")
+    skill_list = json.dumps(available_actions[:20])
+    system_prompt = (
+        f"{incentive}\n\n"
+        f"Available actions: {skill_list}\n\n"
+        f"{_RESPONSE_SCHEMA}"
+    )
+    obs_summary = {
+        "tick": observation.get("tick"),
+        "budget": observation.get("budget"),
+        "position": {"row": observation.get("agent", {}).get("row"), "col": observation.get("agent", {}).get("col")},
+        "inventory": [i.get("type") for i in observation.get("inventory", [])],
+        "visible_machines": {
+            mid: {
+                "type": m.get("type"),
+                "state": m.get("state"),
+                "row": m.get("row"),
+                "col": m.get("col"),
+                "input_queue_len": m.get("input_queue_len"),
+                "output_queue_len": m.get("output_queue_len"),
+            }
+            for mid, m in (observation.get("visible_machines") or {}).items()
+        },
+        "visible_items": [
+            {"type": i.get("type"), "row": i.get("row"), "col": i.get("col")}
+            for i in (observation.get("visible_items") or [])[:5]
+        ],
+        "active_orders": [
+            {"id": o.get("id"), "remaining": o.get("remaining"), "deadline_tick": o.get("deadline_tick")}
+            for o in (observation.get("active_orders") or [])[:3]
+        ],
+        "grid_cell": observation.get("grid_cell"),
+        "messages": observation.get("messages", [])[-2:],
+    }
+    user_message = f"Current observation (tick {obs_summary['tick']}):\n{json.dumps(obs_summary, indent=2)}"
+
+    try:
+        response = await _get_openai_client().chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=384,
+            temperature=0.5,
+        )
+        raw = response.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        return parsed
+    except Exception as exc:
+        log.error("LLM call failed for %s (%s): %s", agent_id, role, exc)
+        return {
+            "action": "wait",
+            "params": {},
+            "reasoning": f"LLM call failed: {exc}",
+        }
+
+
+async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") -> list[dict]:
+    """
+    Run one LLM reasoning step for a subset of agents (not all — too many API calls).
+    Returns trace dicts for socket.io emission.
+    """
+    if env is None:
+        return []
+
+    traces: list[dict] = []
+    now = time.time()
+
+    LLM_AGENTS_PER_STEP = ["management_1", "procurement_1"]
+
+    for agent_id in LLM_AGENTS_PER_STEP:
+        agent = env.world.agents.get(agent_id)
+        if agent is None:
+            continue
+        if agent.is_standby:
+            continue
+
+        observation = env.get_observation(agent_id)
+        available_actions = env.get_action_space(agent_id)
+
+        parsed = await _call_llm_v2(
+            agent_id=agent_id,
+            role=agent.role.value,
+            observation=observation,
+            available_actions=available_actions,
+        )
+
+        action = parsed.get("action", "wait")
+        params = parsed.get("params", {})
+        reasoning = parsed.get("reasoning", "")
+
+        if action not in ("wait", "idle"):
+            agent.action_buffer.insert(0, {"type": action, "params": params})
+
+        traces.append({
+            "run_id": f"gen_{generation}",
+            "role": agent.role.value,
+            "content": f"[{agent_id}] {action}({params})",
+            "timestamp": now,
+            "agent_name": agent_id,
+            "agent_role": agent.role.value,
+            "action": action,
+            "parameters": params,
+            "reasoning": reasoning,
+        })
+
+    return traces
+
 
 WORKER_INCENTIVE = (
     "You are a factory floor Worker. "
@@ -96,90 +261,40 @@ PLANNER_INCENTIVE = (
     "Act on inbox messages from Workers promptly."
 )
 
-# ── Skill registries ─────────────────────────────────────────────────────────
-
 WORKER_SKILLS = [
-    {
-        "name": "process_batch",
-        "description": "Consume from input buffer, produce to output buffer.",
-        "parameters": {"quantity": "integer — number of units to process"},
-    },
-    {
-        "name": "inspect_input",
-        "description": "Sample-check incoming materials and report quality status.",
-        "parameters": {},
-    },
-    {
-        "name": "request_replenishment",
-        "description": "Send a replenishment request upstream or to the Planner.",
-        "parameters": {"urgency": "string — low | medium | high"},
-    },
-    {
-        "name": "report_issue",
-        "description": "Send a flagged problem to the Planner inbox.",
-        "parameters": {"description": "string — description of the problem"},
-    },
-    {
-        "name": "rework_output",
-        "description": "Reprocess defective units sitting in the output buffer.",
-        "parameters": {"quantity": "integer — units to rework"},
-    },
-    {
-        "name": "idle",
-        "description": "Do nothing this tick. Valid when blocked or waiting.",
-        "parameters": {},
-    },
+    {"name": "process_batch", "description": "Consume from input buffer, produce to output buffer.", "parameters": {"quantity": "integer"}},
+    {"name": "inspect_input", "description": "Sample-check incoming materials and report quality status.", "parameters": {}},
+    {"name": "request_replenishment", "description": "Send a replenishment request upstream or to the Planner.", "parameters": {"urgency": "string — low | medium | high"}},
+    {"name": "report_issue", "description": "Send a flagged problem to the Planner inbox.", "parameters": {"description": "string"}},
+    {"name": "rework_output", "description": "Reprocess defective units sitting in the output buffer.", "parameters": {"quantity": "integer"}},
+    {"name": "idle", "description": "Do nothing this tick.", "parameters": {}},
 ]
 
 PLANNER_SKILLS = [
-    {
-        "name": "query_pipeline_status",
-        "description": "Fetch live WIP, throughput, and buffer levels for all three stages. Result appears in next tick context.",
-        "parameters": {},
-    },
-    {
-        "name": "query_worker_status",
-        "description": "Fetch current state and last action of a specific worker.",
-        "parameters": {"worker_id": "string — e.g. worker_raw_materials"},
-    },
-    {
-        "name": "reallocate_materials",
-        "description": "Move raw material allocation between stages.",
-        "parameters": {
-            "from_stage": "string — stage name",
-            "to_stage": "string — stage name",
-            "quantity": "integer",
-        },
-    },
-    {
-        "name": "set_production_target",
-        "description": "Update the batch size target for a stage.",
-        "parameters": {"stage": "string — stage name", "target_units": "integer"},
-    },
-    {
-        "name": "dispatch_order",
-        "description": "Send a direct instruction message to a Worker.",
-        "parameters": {"worker_id": "string", "instruction": "string"},
-    },
-    {
-        "name": "broadcast_to_stage",
-        "description": "Send a message to all Workers at a given stage.",
-        "parameters": {"stage": "string — stage name", "message": "string"},
-    },
-    {
-        "name": "approve_release",
-        "description": "Authorize finished goods to leave the output buffer.",
-        "parameters": {"quantity": "integer"},
-    },
-    {
-        "name": "escalate",
-        "description": "Surface an unresolvable issue to the system log.",
-        "parameters": {"description": "string"},
-    },
+    {"name": "query_pipeline_status", "description": "Fetch live WIP, throughput, and buffer levels for all three stages.", "parameters": {}},
+    {"name": "query_worker_status", "description": "Fetch current state and last action of a specific worker.", "parameters": {"worker_id": "string"}},
+    {"name": "reallocate_materials", "description": "Move raw material allocation between stages.", "parameters": {"from_stage": "string", "to_stage": "string", "quantity": "integer"}},
+    {"name": "set_production_target", "description": "Update the batch size target for a stage.", "parameters": {"stage": "string", "target_units": "integer"}},
+    {"name": "dispatch_order", "description": "Send a direct instruction message to a Worker.", "parameters": {"worker_id": "string", "instruction": "string"}},
+    {"name": "broadcast_to_stage", "description": "Send a message to all Workers at a given stage.", "parameters": {"stage": "string", "message": "string"}},
+    {"name": "approve_release", "description": "Authorize finished goods to leave the output buffer.", "parameters": {"quantity": "integer"}},
+    {"name": "escalate", "description": "Surface an unresolvable issue to the system log.", "parameters": {"description": "string"}},
 ]
 
+_LEGACY_RESPONSE_SCHEMA = """
+Respond with a single JSON object:
+{
+  "action": "<skill_name>",
+  "parameters": { ... },
+  "reasoning": "<one or two sentence explanation>",
+  "message": "<optional string for communication skills>"
+}
+Only use skills from the provided list. Do not add extra keys.
+"""
 
-# ── Context builders ─────────────────────────────────────────────────────────
+_VALID_WORKER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in WORKER_SKILLS)
+_VALID_PLANNER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in PLANNER_SKILLS)
+
 
 def _build_worker_context(agent_id: str, stage_name: str) -> dict:
     if _env is None:
@@ -202,7 +317,6 @@ def _build_planner_context(agent_id: str) -> dict:
     if _env is None:
         return {}
     inbox = _read_inbox(agent_id)
-    # Consume query cache on read (previous-tick-only semantics, mirrors inbox behaviour)
     last_query = _planner_cache.pop(agent_id, {})
     targets = {}
     for sname in ["raw_materials", "intermediates", "finished_product"]:
@@ -215,176 +329,84 @@ def _build_planner_context(agent_id: str) -> dict:
     }
 
 
-# ── Skill dispatchers ────────────────────────────────────────────────────────
-
-_VALID_WORKER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in WORKER_SKILLS)
-_VALID_PLANNER_ACTIONS: frozenset[str] = frozenset(s["name"] for s in PLANNER_SKILLS)
-
-
-def _dispatch_worker_skill(
-    agent_id: str, stage_name: str, action: str, parameters: dict
-) -> str:
+def _dispatch_worker_skill(agent_id: str, stage_name: str, action: str, parameters: dict) -> str:
     if _env is None:
         return "env not initialised"
-
     if action not in _VALID_WORKER_ACTIONS:
         log.warning("Worker %s chose unknown action %r — falling back to idle", agent_id, action)
-        return json.dumps({"ok": False, "error": f"unknown action '{action}'; valid: {sorted(_VALID_WORKER_ACTIONS)}"})
-
+        return json.dumps({"ok": False, "error": f"unknown action '{action}'"})
     if action == "process_batch":
         result = _env.process_batch(stage_name, parameters.get("quantity", 10))
         return json.dumps(result)
-
     elif action == "inspect_input":
         result = _env.inspect_input(stage_name)
         return json.dumps(result)
-
     elif action == "request_replenishment":
         urgency = parameters.get("urgency", "medium")
-        msg = {
-            "type": "replenishment_request",
-            "from": agent_id,
-            "stage": stage_name,
-            "urgency": urgency,
-            "timestamp": time.time(),
-        }
-        _post_to_inbox("planner_1", msg)
+        _post_to_inbox("planner_1", {"type": "replenishment_request", "from": agent_id, "stage": stage_name, "urgency": urgency, "timestamp": time.time()})
         return f"Replenishment request ({urgency}) sent to Planner."
-
     elif action == "report_issue":
         desc = parameters.get("description", "unspecified issue")
-        msg = {
-            "type": "issue_report",
-            "from": agent_id,
-            "stage": stage_name,
-            "description": desc,
-            "timestamp": time.time(),
-        }
-        _post_to_inbox("planner_1", msg)
+        _post_to_inbox("planner_1", {"type": "issue_report", "from": agent_id, "stage": stage_name, "description": desc, "timestamp": time.time()})
         return f"Issue reported to Planner: {desc}"
-
     elif action == "rework_output":
         result = _env.rework_output(stage_name, parameters.get("quantity", 5))
         return json.dumps(result)
-
     elif action == "idle":
         snap = _env.get_stage_snapshot(stage_name)
         _worker_state_cache[agent_id] = {"stage": stage_name, "state": snap, "last_action": "idle"}
         return "Agent idle this tick."
-
     return f"Unknown worker skill: {action}"
 
 
-def _dispatch_planner_skill(
-    agent_id: str, action: str, parameters: dict
-) -> str:
+def _dispatch_planner_skill(agent_id: str, action: str, parameters: dict) -> str:
     if _env is None:
         return "env not initialised"
-
     if action not in _VALID_PLANNER_ACTIONS:
         log.warning("Planner %s chose unknown action %r — falling back to query", agent_id, action)
-        return json.dumps({"ok": False, "error": f"unknown action '{action}'; valid: {sorted(_VALID_PLANNER_ACTIONS)}"})
-
+        return json.dumps({"ok": False, "error": f"unknown action '{action}'"})
     if action == "query_pipeline_status":
         result = _env.query_pipeline_status()
         _planner_cache[agent_id] = {"query_pipeline_status": result, "fetched_at": time.time()}
         return "Pipeline status fetched — available in next tick context."
-
     elif action == "query_worker_status":
         worker_id = parameters.get("worker_id", "")
         stage_name = worker_id.replace("worker_", "")
         live_snap = _env.get_stage_snapshot(stage_name) if _env else {}
         last_action_info = _worker_state_cache.get(worker_id, {})
-        result = {
-            "worker_id": worker_id,
-            "live_stage_snapshot": live_snap,
-            "last_action": last_action_info.get("last_action"),
-            "last_parameters": last_action_info.get("last_parameters"),
-            "skill_result": last_action_info.get("skill_result"),
-        }
+        result = {"worker_id": worker_id, "live_stage_snapshot": live_snap, "last_action": last_action_info.get("last_action")}
         _planner_cache[agent_id] = {"query_worker_status": result, "fetched_at": time.time()}
         return f"Worker status for {worker_id} fetched."
-
     elif action == "reallocate_materials":
-        result = _env.reallocate_materials(
-            parameters.get("from_stage", ""),
-            parameters.get("to_stage", ""),
-            parameters.get("quantity", 0),
-        )
+        result = _env.reallocate_materials(parameters.get("from_stage", ""), parameters.get("to_stage", ""), parameters.get("quantity", 0))
         return json.dumps(result)
-
     elif action == "set_production_target":
-        result = _env.set_production_target(
-            parameters.get("stage", ""), parameters.get("target_units", 10)
-        )
+        result = _env.set_production_target(parameters.get("stage", ""), parameters.get("target_units", 10))
         return json.dumps(result)
-
     elif action == "dispatch_order":
         worker_id = parameters.get("worker_id", "")
         instruction = parameters.get("instruction", "")
-        msg = {
-            "type": "dispatch_order",
-            "from": agent_id,
-            "instruction": instruction,
-            "timestamp": time.time(),
-        }
-        _post_to_inbox(worker_id, msg)
+        _post_to_inbox(worker_id, {"type": "dispatch_order", "from": agent_id, "instruction": instruction, "timestamp": time.time()})
         return f"Order dispatched to {worker_id}: {instruction}"
-
     elif action == "broadcast_to_stage":
         stage = parameters.get("stage", "")
         message = parameters.get("message", "")
-        worker_id = f"worker_{stage}"
-        msg = {
-            "type": "broadcast",
-            "from": agent_id,
-            "stage": stage,
-            "message": message,
-            "timestamp": time.time(),
-        }
-        _post_to_inbox(worker_id, msg)
+        _post_to_inbox(f"worker_{stage}", {"type": "broadcast", "from": agent_id, "stage": stage, "message": message, "timestamp": time.time()})
         return f"Broadcast to {stage}: {message}"
-
     elif action == "approve_release":
         result = _env.approve_release(parameters.get("quantity", 0))
         return json.dumps(result)
-
     elif action == "escalate":
         desc = parameters.get("description", "unspecified")
         log.warning("ESCALATION from planner: %s", desc)
         return f"Escalated: {desc}"
-
     return f"Unknown planner skill: {action}"
 
 
-# ── LLM caller ───────────────────────────────────────────────────────────────
-
-_RESPONSE_SCHEMA = """
-Respond with a single JSON object:
-{
-  "action": "<skill_name>",
-  "parameters": { ... },
-  "reasoning": "<one or two sentence explanation>",
-  "message": "<optional string for communication skills>"
-}
-Only use skills from the provided list. Do not add extra keys.
-"""
-
-
-async def _call_llm(
-    role_label: str,
-    incentive: str,
-    skills: list[dict],
-    context: dict,
-) -> dict:
+async def _call_llm(role_label: str, incentive: str, skills: list[dict], context: dict) -> dict:
     skill_list = json.dumps(skills, indent=2)
-    system_prompt = (
-        f"{incentive}\n\n"
-        f"Available skills:\n{skill_list}\n\n"
-        f"{_RESPONSE_SCHEMA}"
-    )
+    system_prompt = f"{incentive}\n\nAvailable skills:\n{skill_list}\n\n{_LEGACY_RESPONSE_SCHEMA}"
     user_message = f"Current context (this tick):\n{json.dumps(context, indent=2)}"
-
     try:
         response = await _get_openai_client().chat.completions.create(
             model="gpt-4o-mini",
@@ -400,16 +422,9 @@ async def _call_llm(
         return json.loads(raw)
     except Exception as exc:
         log.error("LLM call failed for %s: %s", role_label, exc)
-        # Use role-appropriate safe fallback: planner queries for status, workers idle
         safe_action = "query_pipeline_status" if "Planner" in role_label else "idle"
-        return {
-            "action": safe_action,
-            "parameters": {},
-            "reasoning": f"LLM call failed: {exc}",
-        }
+        return {"action": safe_action, "parameters": {}, "reasoning": f"LLM call failed: {exc}"}
 
-
-# ── Main entry point ─────────────────────────────────────────────────────────
 
 WORKER_AGENTS = [
     {"agent_id": "worker_raw_materials",  "role": "worker", "stage": "raw_materials"},
@@ -419,47 +434,27 @@ WORKER_AGENTS = [
 PLANNER_AGENTS = [
     {"agent_id": "planner_1", "role": "planner"},
 ]
-
 ALL_MANUFACTURING_AGENT_CONFIGS = WORKER_AGENTS + PLANNER_AGENTS
 
 
 async def run_manufacturing_step(generation: int) -> list[dict]:
-    """
-    Run one tick of manufacturing agents via LLM calls.
-    Returns a list of enriched trace dicts for the Socket.IO agent_thought event.
-    """
+    """Legacy: Run one tick of manufacturing agents via LLM calls (3-stage pipeline)."""
     if _env is None:
         return []
 
     traces: list[dict] = []
     now = time.time()
 
-    # Workers first
     for cfg in WORKER_AGENTS:
         agent_id = cfg["agent_id"]
         stage = cfg["stage"]
         context = _build_worker_context(agent_id, stage)
-
-        parsed = await _call_llm(
-            role_label=f"Worker/{stage}",
-            incentive=WORKER_INCENTIVE,
-            skills=WORKER_SKILLS,
-            context=context,
-        )
-
+        parsed = await _call_llm(role_label=f"Worker/{stage}", incentive=WORKER_INCENTIVE, skills=WORKER_SKILLS, context=context)
         action = parsed.get("action", "idle")
         parameters = parsed.get("parameters", {})
         reasoning = parsed.get("reasoning", "")
-
         skill_result = _dispatch_worker_skill(agent_id, stage, action, parameters)
-
-        _worker_state_cache[agent_id] = {
-            "stage": stage,
-            "last_action": action,
-            "last_parameters": parameters,
-            "skill_result": skill_result,
-        }
-
+        _worker_state_cache[agent_id] = {"stage": stage, "last_action": action, "last_parameters": parameters, "skill_result": skill_result}
         traces.append({
             "run_id": f"gen_{generation}",
             "role": "worker",
@@ -473,24 +468,14 @@ async def run_manufacturing_step(generation: int) -> list[dict]:
             "reasoning": reasoning,
         })
 
-    # Planner
     for cfg in PLANNER_AGENTS:
         agent_id = cfg["agent_id"]
         context = _build_planner_context(agent_id)
-
-        parsed = await _call_llm(
-            role_label="Planner",
-            incentive=PLANNER_INCENTIVE,
-            skills=PLANNER_SKILLS,
-            context=context,
-        )
-
+        parsed = await _call_llm(role_label="Planner", incentive=PLANNER_INCENTIVE, skills=PLANNER_SKILLS, context=context)
         action = parsed.get("action", "query_pipeline_status")
         parameters = parsed.get("parameters", {})
         reasoning = parsed.get("reasoning", "")
-
         skill_result = _dispatch_planner_skill(agent_id, action, parameters)
-
         traces.append({
             "run_id": f"gen_{generation}",
             "role": "planner",
@@ -498,7 +483,6 @@ async def run_manufacturing_step(generation: int) -> list[dict]:
             "timestamp": now,
             "agent_name": agent_id,
             "agent_role": "planner",
-            "stage": None,
             "action": action,
             "parameters": parameters,
             "reasoning": reasoning,

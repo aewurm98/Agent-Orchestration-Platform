@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useGameState } from "@/hooks/useGameState";
+import { useSocket } from "@/hooks/useSocket";
 import ManufacturingView from "@/components/ManufacturingView";
 import type { GameAgent } from "@/context/SocketContext";
 
@@ -233,11 +234,22 @@ function GridCanvas() {
 
 export default function GameViewport() {
   const { gameState } = useGameState();
+  const { mfgState } = useSocket();
 
-  if (gameState?.scenario === "manufacturing") {
+  const isManufacturing =
+    mfgState?.grid != null || gameState?.scenario === "manufacturing";
+
+  if (isManufacturing) {
+    const legacyGameState = gameState ?? {
+      scenario: "manufacturing",
+      agents: [],
+      resources: {},
+      score: 0,
+      tick: mfgState?.tick ?? 0,
+    };
     return (
-      <div className="w-full h-full bg-[#0d1117]" data-testid="manufacturing-view">
-        <ManufacturingView gameState={gameState} />
+      <div className="w-full h-full bg-[#0a0e15]" data-testid="manufacturing-view">
+        <ManufacturingView gameState={legacyGameState as import("@/context/SocketContext").GameState} />
       </div>
     );
   }

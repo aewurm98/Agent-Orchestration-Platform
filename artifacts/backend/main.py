@@ -13,8 +13,11 @@ from agents.orchestrator import run_orchestrator, run_one_generation
 from game_envs.supply_chain import SupplyChainEnv
 from game_envs.disaster_relief import DisasterReliefEnv
 from game_envs.peer_agents import PeerAgentsEnv
-from game_envs.manufacturing import ManufacturingEnv
+from game_envs.manufacturing import ManufacturingEnvLegacy
+from game_envs.manufacturing_v2 import ManufacturingEnvV2
+from game_envs.manufacturing_v2.scenarios import FIRST_FACTORY_CONFIG
 from state.db import init_db, save_workflow, get_workflows, save_trace, get_traces, WorkflowIn, TraceIn
+from api.mfg_router import router as mfg_router, set_env as mfg_set_env
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
@@ -38,12 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(mfg_router)
 
 SCENARIOS: dict[str, type] = {
     "supply_chain":    SupplyChainEnv,
     "disaster_relief": DisasterReliefEnv,
     "peer_agents":     PeerAgentsEnv,
-    "manufacturing":   ManufacturingEnv,
+    "manufacturing":   ManufacturingEnvV2,
 }
 
 SCENARIO_LABEL_MAP: dict[str, str] = {
@@ -178,29 +182,35 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     """
     LANGGRAPH_TICK_INTERVAL = 5
 
-    env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
-    env = env_cls()
-
-    # For manufacturing, share the env with the manufacturing roles module
+    # ── Manufacturing v2 loop ─────────────────────────────────────────────────
     if scenario == "manufacturing":
+        from agents.manufacturing_policies import ScriptedGreedyPolicy
         from agents import manufacturing_roles
-        from agents.manufacturing_roles import ALL_MANUFACTURING_AGENT_CONFIGS
-        manufacturing_roles.set_active_env(env)
-        # Skip the initial run_orchestrator (avoids blocking LLM calls at startup)
-        # and build the initial state directly so the game loop starts immediately.
+        from agents.manufacturing_roles import run_manufacturing_v2_step
+
+        env = ManufacturingEnvV2(FIRST_FACTORY_CONFIG)
+        mfg_set_env(env)
+        manufacturing_roles.set_active_env_v2(env)
+
+        policy = ScriptedGreedyPolicy()
+        game_tick_counter = 0
+        metrics_interval = 5
+
         orch_state: dict = {
             "scenario": scenario,
-            "objective": "Maximise pipeline throughput across three manufacturing stages",
-            "agent_configs": list(ALL_MANUFACTURING_AGENT_CONFIGS),
+            "objective": "Maximise manufacturing profit by coordinating 5 specialized agent types on a grid world",
+            "agent_configs": [
+                {"agent_id": aid, "role": a.role.value}
+                for aid, a in env.world.agents.items()
+            ],
             "topology": {
-                "nodes": ["planner_1", "worker_raw_materials", "worker_intermediates", "worker_finished_product"],
+                "nodes": list(env.world.agents.keys()),
                 "edges": [
-                    ("planner_1", "worker_raw_materials"),
-                    ("planner_1", "worker_intermediates"),
-                    ("planner_1", "worker_finished_product"),
-                    ("worker_raw_materials", "planner_1"),
-                    ("worker_intermediates", "planner_1"),
-                    ("worker_finished_product", "planner_1"),
+                    ("management_1", aid)
+                    for aid in env.world.agents.keys() if aid != "management_1"
+                ] + [
+                    (aid, "management_1")
+                    for aid in env.world.agents.keys() if aid != "management_1"
                 ],
             },
             "current_fitness": 0.0,
@@ -212,37 +222,103 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "max_generations": 999,
             "hitl_pending": False,
             "confidence": 1.0,
-            "edge_scores": {
-                "planner_1->worker_raw_materials": 0.8,
-                "planner_1->worker_intermediates": 0.8,
-                "planner_1->worker_finished_product": 0.8,
-                "worker_raw_materials->planner_1": 0.7,
-                "worker_intermediates->planner_1": 0.7,
-                "worker_finished_product->planner_1": 0.7,
-            },
+            "edge_scores": {},
             "checkpoint_key": "",
             "run_id": run_id,
             "traces": [],
         }
-    else:
-        orch_state: dict = await run_orchestrator(
-            scenario=scenario,
-            run_id=run_id,
-            max_generations=1,
-        )
+        trace_cursor = 0
+
+        while active_run.get("running"):
+            speed_mult = float(active_run.get("speed_multiplier", 1.0))
+
+            scripted_actions = policy.get_all_actions(env.world)
+            tick_result = env.world.tick_advance(scripted_actions)
+            game_state = env.to_json()
+
+            await sio.emit("game_state_update", game_state)
+            await sio.emit("tick_update", game_state)
+
+            for alert in tick_result.get("alerts", []):
+                await sio.emit("alert", alert)
+
+            for ar in tick_result.get("action_results", []):
+                await sio.emit("agent_action", {
+                    "run_id": run_id,
+                    **ar,
+                    "timestamp": time.time(),
+                })
+
+            game_tick_counter += 1
+
+            if game_tick_counter % metrics_interval == 0:
+                await sio.emit("metrics_update", env.get_metrics())
+                orch_state = await run_one_generation(orch_state)
+                generation: int = orch_state.get("generation", 0)
+                current_fitness: float = env.get_fitness()
+                parent_fitness: float = orch_state.get("parent_fitness", current_fitness * 0.9)
+                orch_state["current_fitness"] = current_fitness
+                orch_state["parent_fitness"] = parent_fitness
+
+                await sio.emit("fitness_update", {
+                    "generation": generation,
+                    "parent_fitness": round(parent_fitness, 4),
+                    "best_fitness": round(current_fitness, 4),
+                    "mutation_type": "scripted",
+                    "topology_diff": f"+{game_tick_counter}/0 ticks",
+                    "cost_per_task": round(random.uniform(0.001, 0.05), 5),
+                    "latency": round(random.uniform(0.2, 1.5), 3),
+                })
+
+                dag_payload = _build_dag_update(orch_state, scenario)
+                await sio.emit("dag_update", dag_payload)
+
+                llm_traces = await run_manufacturing_v2_step(generation, env)
+                for trace in llm_traces:
+                    payload = {
+                        "run_id": run_id,
+                        "role": trace.get("role", "system"),
+                        "content": trace.get("content", ""),
+                        "timestamp": trace.get("timestamp", time.time()),
+                    }
+                    for field_name in ("agent_name", "agent_role", "action", "parameters", "reasoning"):
+                        if field_name in trace:
+                            payload[field_name] = trace[field_name]
+                    await sio.emit("agent_thought", payload)
+                    await asyncio.sleep(0.05)
+
+            if env.done:
+                await sio.emit("game_over", {
+                    "run_id": run_id,
+                    "metrics": env.get_metrics(),
+                    "fitness": env.get_fitness(),
+                    "fitness_vector": env.get_fitness_vector(),
+                    "ticks": env.tick_count,
+                })
+                active_run["running"] = False
+                break
+
+            tick_sleep = max(0.05, 0.5 / max(speed_mult, 0.1))
+            await asyncio.sleep(tick_sleep)
+
+        return
+
+    # ── All other scenarios ───────────────────────────────────────────────────
+    env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
+    env = env_cls()
+
+    orch_state: dict = await run_orchestrator(
+        scenario=scenario,
+        run_id=run_id,
+        max_generations=1,
+    )
 
     game_tick_counter = 0
-    trace_cursor = 0  # index into orch_state["traces"] — only emit new entries
+    trace_cursor = 0
 
     while active_run.get("running"):
-        # 500 ms game tick
-        if scenario == "manufacturing":
-            env.tick()
-            game_state = env.to_json()
-            await sio.emit("game_state_update", game_state)
-        else:
-            game_state = env.step(env.random_action())
-            await sio.emit("game_state_update", game_state.to_json())
+        game_state = env.step(env.random_action())
+        await sio.emit("game_state_update", game_state.to_json())
         game_tick_counter += 1
 
         if not active_run.get("running"):
@@ -259,7 +335,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
             mutation_type: str = (
                 orch_state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
-                if orch_state.get("agent_configs") and scenario != "manufacturing" else "semantic"
+                if orch_state.get("agent_configs") else "semantic"
             )
 
             await sio.emit("fitness_update", {
@@ -272,7 +348,6 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 "latency": round(latency, 3),
             })
 
-            # Emit only newly appended traces since last generation (cursor-based)
             all_traces = orch_state.get("traces", [])
             new_traces = all_traces[trace_cursor:]
             trace_cursor = len(all_traces)
@@ -283,10 +358,9 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                     "content": trace.get("content", ""),
                     "timestamp": trace.get("timestamp", time.time()),
                 }
-                # Pass through enriched manufacturing fields if present
-                for field in ("agent_name", "agent_role", "stage", "action", "parameters", "reasoning"):
-                    if field in trace:
-                        payload[field] = trace[field]
+                for field_name in ("agent_name", "agent_role", "stage", "action", "parameters", "reasoning"):
+                    if field_name in trace:
+                        payload[field_name] = trace[field_name]
 
                 await sio.emit("agent_thought", payload)
                 await asyncio.sleep(0.12)
@@ -396,6 +470,16 @@ async def health() -> dict:
 @sio.event
 async def connect(sid: str, environ: dict, auth: Optional[dict] = None) -> None:
     print(f"Client connected: {sid}")
+    from api.mfg_router import get_env
+    try:
+        env = get_env()
+        if env is not None and active_run.get("scenario") == "manufacturing":
+            state = env.to_json()
+            await sio.emit("game_state_update", state, to=sid)
+            await sio.emit("tick_update", state, to=sid)
+            await sio.emit("metrics_update", env.get_metrics(), to=sid)
+    except Exception:
+        pass
 
 
 @sio.event
@@ -420,6 +504,50 @@ async def scenario_select(sid: str, data: dict) -> None:
 @sio.event
 async def start_evolution(sid: str, data: dict) -> None:
     print(f"Start evolution requested by {sid}")
+
+
+@sio.event
+async def mfg_set_speed(sid: str, data: dict) -> None:
+    multiplier = float(data.get("multiplier", 1.0))
+    active_run["speed_multiplier"] = multiplier
+    print(f"Manufacturing speed set to {multiplier}x")
+
+
+@sio.event
+async def mfg_pause(sid: str, data: dict) -> None:
+    active_run["running"] = False
+    print(f"Manufacturing paused by {sid}")
+
+
+@sio.event
+async def mfg_resume(sid: str, data: dict) -> None:
+    global simulation_task
+    if not active_run.get("running"):
+        scenario = active_run.get("scenario", "manufacturing")
+        run_id = active_run.get("run_id", f"run_{int(time.time())}")
+        active_run["running"] = True
+        simulation_task = asyncio.create_task(simulation_loop(scenario, "autonomous", run_id))
+    print(f"Manufacturing resumed by {sid}")
+
+
+@sio.event
+async def mfg_action(sid: str, data: dict) -> None:
+    """Human-in-the-loop: forward a manual action for a specific agent."""
+    from api.mfg_router import get_env
+    env = get_env()
+    agent_id = data.get("agent_id")
+    action_type = data.get("type", "wait")
+    params = data.get("params", {})
+    if agent_id and agent_id in env.world.agents:
+        env.world.agents[agent_id].action_buffer.insert(0, {"type": action_type, "params": params})
+        await sio.emit("agent_action", {
+            "agent_id": agent_id,
+            "action": action_type,
+            "params": params,
+            "ok": True,
+            "message": "Manual action queued",
+            "run_id": active_run.get("run_id", ""),
+        }, to=sid)
 
 
 app_with_socket = socketio.ASGIApp(sio, app)
