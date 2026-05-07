@@ -30,22 +30,42 @@ class ManufacturingEnvV2:
             execution_mode=config.get("execution_mode", "async_buffered"),
         )
 
-        for (r, c), ct in config.get("cell_overrides", {}).items():
+        for key, ct in config.get("cell_overrides", {}).items():
+            # key may be a tuple (r,c) from in-process configs, or a string
+            # "(r,c)" when deserialized from JSON (JSON only supports string keys).
+            if isinstance(key, (tuple, list)):
+                r, c = int(key[0]), int(key[1])
+            else:
+                # parse "(r,c)" or "r,c"
+                clean = str(key).strip("() ")
+                r, c = (int(x) for x in clean.split(","))
+            # ct may be a CellType enum or a plain string value
+            if isinstance(ct, str):
+                ct = CellType(ct)
             world.set_cell(r, c, ct)
 
         for m_cfg in config.get("machines", []):
+            mtype = m_cfg["type"]
+            if isinstance(mtype, str):
+                mtype = MachineType(mtype)
+            mspeed = m_cfg.get("speed", SpeedMode.NORMAL)
+            if isinstance(mspeed, str):
+                mspeed = SpeedMode(mspeed)
             world.add_machine(
                 machine_id=m_cfg["id"],
-                machine_type=m_cfg["type"],
+                machine_type=mtype,
                 row=m_cfg["row"],
                 col=m_cfg["col"],
-                speed=m_cfg.get("speed", SpeedMode.NORMAL),
+                speed=mspeed,
             )
 
         for a_cfg in config.get("agents", []):
+            role = a_cfg["role"]
+            if isinstance(role, str):
+                role = AgentRole(role)
             world.add_agent(
                 agent_id=a_cfg["id"],
-                role=a_cfg["role"],
+                role=role,
                 row=a_cfg["row"],
                 col=a_cfg["col"],
             )

@@ -109,6 +109,7 @@ class MetricsSnapshot:
 
 class EconomicModel:
     def __init__(self, starting_budget: float = 10_000.0):
+        self.starting_budget = starting_budget
         self.budget = starting_budget
         self.pl = PLSnapshot()
         self._latency_samples: list[float] = []
@@ -173,8 +174,7 @@ class EconomicModel:
             self._latency_samples = self._latency_samples[-200:]
 
     def check_budget_warning(self, threshold: float = 0.2) -> Optional[dict]:
-        starting = 10_000.0
-        if self.budget < starting * threshold:
+        if self.budget < self.starting_budget * threshold:
             return {
                 "type": "alert",
                 "event": "budget_warning",
