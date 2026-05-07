@@ -141,7 +141,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     newSocket.on("fitness_update", (data: FitnessUpdate) => {
-      setEvolutionData((prev) => [...prev, data]);
+      setEvolutionData((prev) => {
+        const filtered = prev.filter((d) => d.generation !== data.generation);
+        return [...filtered, data];
+      });
       setCurrentGeneration(data.generation);
     });
 
