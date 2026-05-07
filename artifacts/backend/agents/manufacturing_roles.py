@@ -27,10 +27,21 @@ _openai_client: AsyncOpenAI | None = None
 def _get_openai_client() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AsyncOpenAI(
-            base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL"),
-            api_key=os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", "_DUMMY_API_KEY_"),
-        )
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        integration_base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+        integration_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
+        if openai_key:
+            _openai_client = AsyncOpenAI(api_key=openai_key)
+        elif integration_base and integration_key:
+            _openai_client = AsyncOpenAI(
+                base_url=integration_base,
+                api_key=integration_key,
+            )
+        else:
+            raise RuntimeError(
+                "No OpenAI credentials found. "
+                "Set OPENAI_API_KEY or configure the Replit OpenAI AI Integration."
+            )
     return _openai_client
 
 # ── Module-level shared state ────────────────────────────────────────────────

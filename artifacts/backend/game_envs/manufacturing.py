@@ -33,6 +33,7 @@ class Stage:
     worker_state: str = "idle"   # idle | processing | blocked
     total_processed: int = 0
     defective_units: int = 0
+    idle_ticks: int = 0          # consecutive ticks in idle/blocked state
 
 
 class ManufacturingEnv:
@@ -61,11 +62,13 @@ class ManufacturingEnv:
         qty = max(0, min(quantity, stage.input_buffer, stage.throughput_capacity))
         if qty == 0:
             stage.worker_state = "blocked"
+            stage.idle_ticks += 1
             return {"ok": False, "processed": 0, "reason": "input buffer empty or capacity exceeded"}
         stage.input_buffer -= qty
         stage.output_buffer += qty
         stage.total_processed += qty
         stage.worker_state = "processing"
+        stage.idle_ticks = 0
         return {"ok": True, "processed": qty}
 
     def inspect_input(self, stage_name: str) -> dict:
@@ -136,9 +139,10 @@ class ManufacturingEnv:
     # ── planner query ───────────────────────────────────────────────────────
 
     def query_pipeline_status(self) -> dict:
-        """Return aggregate WIP, throughput, buffer levels for all three stages."""
+        """Return aggregate WIP, throughput, buffer levels, and idle counts for all three stages."""
         stages = {}
         for s in self._stages:
+            throughput_rate = round(s.total_processed / max(self._tick, 1), 2)
             stages[s.name] = {
                 "input_buffer": s.input_buffer,
                 "output_buffer": s.output_buffer,
@@ -146,27 +150,40 @@ class ManufacturingEnv:
                 "target_units": s.target_units,
                 "worker_state": s.worker_state,
                 "total_processed": s.total_processed,
+                "throughput_rate_per_tick": throughput_rate,
                 "wip": s.input_buffer + s.output_buffer,
-                "idle": s.worker_state == "idle",
+                "idle_count": s.idle_ticks,          # consecutive idle/blocked ticks
+                "is_idle": s.worker_state in ("idle", "blocked"),
             }
         return {
             "tick": self._tick,
             "approved_finished": self._approved_finished,
             "stages": stages,
             "total_wip": sum(s.input_buffer + s.output_buffer for s in self._stages),
+            "total_throughput": sum(s.total_processed for s in self._stages),
         }
 
-    # ── tick (gravity flow between stages) ─────────────────────────────────
+    # ── tick (target-driven flow between stages) ────────────────────────────
 
     def tick(self) -> None:
         self._tick += 1
+        # Replenish raw-materials input
         self._stages[0].input_buffer = min(
             self._stages[0].input_buffer + NATURAL_REPLENISHMENT, 300
         )
+        # Drain each stage's output buffer into the next stage's input buffer,
+        # capped at the downstream stage's target_units (target-driven pull).
         for i in range(len(self._stages) - 1):
-            transfer = min(self._stages[i].output_buffer, 40)
+            pull_cap = self._stages[i + 1].target_units
+            transfer = min(self._stages[i].output_buffer, pull_cap)
             self._stages[i].output_buffer -= transfer
             self._stages[i + 1].input_buffer += transfer
+        # Track idle_ticks for stages that weren't actively processing
+        for s in self._stages:
+            if s.worker_state in ("idle", "blocked"):
+                s.idle_ticks += 1
+            else:
+                s.idle_ticks = 0
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
