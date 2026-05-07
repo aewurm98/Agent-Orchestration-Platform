@@ -118,6 +118,12 @@ class ManufacturingEnvV2:
           - dict[str, dict]  — {agent_id: {type, params}}
           - list of dicts    — [{agent_id, type, params}]
           - None             — policy-free tick
+
+        Returns a *state delta* containing only the dynamic fields that change
+        each tick (agents, machines, items, budget, metrics, events, orders).
+        Static fields (full grid layout, simulation_length, scenario) are omitted
+        to keep headless EA/API consumers efficient.  Full state is always
+        available via GET /api/mfg/state.
         """
         actions_dict: Optional[dict] = None
         if isinstance(actions, dict):
@@ -128,10 +134,33 @@ class ManufacturingEnvV2:
                 for a in actions
                 if "agent_id" in a
             }
-        result = self.world.tick_advance(actions_dict)
-        state = self.world.to_json()
-        state["_tick_result"] = result
-        return state
+        tick_result = self.world.tick_advance(actions_dict)
+        metrics = self.world.economy.snapshot(
+            self.world.tick, self.world.agents, self.world.machines
+        )
+        orders_list = [o.to_dict() for o in self.world._active_orders]
+        return {
+            # Identification
+            "tick": self.world.tick,
+            "done": self.world.done,
+            # Dynamic entity state (positions, states, inventories)
+            "agents":   {aid: a.to_dict() for aid, a in self.world.agents.items()},
+            "machines": {mid: m.to_dict() for mid, m in self.world.machines.items()},
+            "items":    [i.to_dict() for i in self.world.items.values()],
+            # Economy
+            "budget":   round(self.world.economy.budget, 2),
+            "orders":   orders_list,
+            "active_orders": orders_list,  # compat alias
+            # Metrics & fitness
+            "metrics":  metrics.to_dict(),
+            "fitness":  metrics.fitness_scalar(),
+            "fitness_vector": metrics.fitness_vector(),
+            # Events from this tick
+            "events":   tick_result.get("alerts", []) + self.world._pending_alerts,
+            # Grid dimensions (lightweight ref, not full grid)
+            "grid_rows": self.world.rows,
+            "grid_cols": self.world.cols,
+        }
 
     def tick(self) -> None:
         self.world.tick_advance()
