@@ -184,7 +184,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
 
     # ── Manufacturing v2 loop ─────────────────────────────────────────────────
     if scenario == "manufacturing":
-        from agents.manufacturing_policies import ScriptedGreedyPolicy
+        from agents.manufacturing_policies import get_policy
         from agents import manufacturing_roles
         from agents.manufacturing_roles import run_manufacturing_v2_step
 
@@ -192,7 +192,9 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         mfg_set_env(env)
         manufacturing_roles.set_active_env_v2(env)
 
-        policy = ScriptedGreedyPolicy()
+        # Policy selection: read from run config (random / scripted / llm)
+        policy_name = active_run.get("policy", "scripted")
+        policy = get_policy(str(policy_name))
         game_tick_counter = 0
         metrics_interval = 5
 
@@ -230,6 +232,11 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         trace_cursor = 0
 
         while active_run.get("running"):
+            # Pause: sleep and re-check; state is preserved in `env`
+            if active_run.get("paused"):
+                await asyncio.sleep(0.1)
+                continue
+
             speed_mult = float(active_run.get("speed_multiplier", 1.0))
 
             scripted_actions = policy.get_all_actions(env.world)
@@ -408,8 +415,10 @@ async def start_scenario(payload: dict) -> dict:
     _node_action_history.clear()
     active_run.clear()
     active_run["running"] = True
+    active_run["paused"] = False
     active_run["run_id"] = run_id
     active_run["scenario"] = scenario
+    active_run["policy"] = payload.get("policy", "scripted")
     simulation_task = asyncio.create_task(simulation_loop(scenario, mode, run_id))
     return {"status": "started", "run_id": run_id, "scenario": scenario}
 
@@ -513,17 +522,14 @@ async def _handle_set_speed(sid: str, data: dict) -> None:
 
 
 async def _handle_pause(sid: str, data: dict) -> None:
-    active_run["running"] = False
+    # Set paused flag WITHOUT stopping the loop — world state is preserved
+    active_run["paused"] = True
     print(f"Manufacturing paused by {sid}")
 
 
 async def _handle_resume(sid: str, data: dict) -> None:
-    global simulation_task
-    if not active_run.get("running"):
-        scenario = active_run.get("scenario", "manufacturing")
-        run_id = active_run.get("run_id", f"run_{int(time.time())}")
-        active_run["running"] = True
-        simulation_task = asyncio.create_task(simulation_loop(scenario, "autonomous", run_id))
+    # Clear paused flag — the running loop wakes up on next iteration
+    active_run["paused"] = False
     print(f"Manufacturing resumed by {sid}")
 
 
