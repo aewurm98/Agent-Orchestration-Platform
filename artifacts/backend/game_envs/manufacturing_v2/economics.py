@@ -67,12 +67,22 @@ class MetricsSnapshot:
     pl: dict = field(default_factory=dict)
 
     def fitness_vector(self) -> list[float]:
+        """
+        EA contract — 7 components in specified order, all raw (not negated):
+          [0] cumulative_profit       (higher is better for EA maximisation)
+          [1] profitability_rate      profit / tick
+          [2] throughput              cumulative finished items shipped
+          [3] avg_latency             raw ticks (lower = better; EA weights handle sign)
+          [4] agent_idle_ratio        0-1 (lower = better; EA weights handle sign)
+          [5] machine_utilization     0-1 (higher is better)
+          [6] orders_fulfilled_ratio  fulfilled / (fulfilled + missed)
+        """
         return [
             self.current_profit,
             self.current_profit / max(self.tick, 1),
             float(self.throughput),
-            -self.avg_latency,
-            -self.agent_idle_ratio,
+            self.avg_latency,          # raw — EA negate via negative weight
+            self.agent_idle_ratio,     # raw — EA negate via negative weight
             self.machine_utilization,
             self.orders_fulfilled / max(self.orders_fulfilled + self.orders_missed, 1),
         ]
@@ -81,8 +91,11 @@ class MetricsSnapshot:
         self,
         weights: Optional[list[float]] = None,
     ) -> float:
+        # Weights aligned to fitness_vector() component order:
+        # [profit, profit_rate, throughput, avg_latency, idle_ratio, util, orders_ratio]
+        # latency and idle_ratio are raw positives → use negative weights to maximise fitness
         if weights is None:
-            weights = [0.4, 0.3, 0.15, 0.1, 0.05, 0.0, 0.0]
+            weights = [0.4, 0.3, 0.15, -0.05, -0.05, 0.05, 0.05]
         vec = self.fitness_vector()
         score = 0.0
         for w, v in zip(weights, vec):
