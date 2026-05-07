@@ -7,8 +7,11 @@ Workers operate on individual stages; a Planner oversees the full pipeline.
 """
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Any
+
+DEFECT_RATE = 0.08  # 8% of processed units become defective
 
 
 STAGE_NAMES = ["raw_materials", "intermediates", "finished_product"]
@@ -65,11 +68,14 @@ class ManufacturingEnv:
             stage.idle_ticks += 1
             return {"ok": False, "processed": 0, "reason": "input buffer empty or capacity exceeded"}
         stage.input_buffer -= qty
+        defective = int(qty * DEFECT_RATE * (0.5 + random.random()))
+        good = qty - defective
         stage.output_buffer += qty
-        stage.total_processed += qty
+        stage.defective_units += defective
+        stage.total_processed += good
         stage.worker_state = "processing"
         stage.idle_ticks = 0
-        return {"ok": True, "processed": qty}
+        return {"ok": True, "processed": qty, "good": good, "defective": defective}
 
     def inspect_input(self, stage_name: str) -> dict:
         stage = self._get_stage(stage_name)

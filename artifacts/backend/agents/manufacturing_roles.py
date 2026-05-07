@@ -399,8 +399,10 @@ async def _call_llm(
         return json.loads(raw)
     except Exception as exc:
         log.error("LLM call failed for %s: %s", role_label, exc)
+        # Use role-appropriate safe fallback: planner queries for status, workers idle
+        safe_action = "query_pipeline_status" if "Planner" in role_label else "idle"
         return {
-            "action": "idle",
+            "action": safe_action,
             "parameters": {},
             "reasoning": f"LLM call failed: {exc}",
         }
