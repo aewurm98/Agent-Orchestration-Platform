@@ -8,8 +8,10 @@ Module-level singletons hold env reference, message board, and planner query cac
 Call set_active_env(env) for legacy mode, set_active_env_v2(env) for grid mode.
 
 Edge credit assignment:
-  _pending_message_log maps edge_key → list of (sent_tick, profit_at_send, shipped_at_send).
-  sweep_edge_scores(tick) is called every 5 ticks to bump/drop _edge_scores.
+  _pending_message_log maps edge_key → list of
+  (sent_tick, profit_at_send, shipped_at_send, penalty_at_send) 4-tuples.
+  sweep_edge_scores(tick) is called every 5 ticks (via orchestrator evaluate) to
+  bump/drop _edge_scores based on outcome since the message was sent.
 """
 from __future__ import annotations
 
@@ -295,7 +297,7 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
     Run one LLM reasoning step for a subset of agents (not all — too many API calls).
     Returns trace dicts for socket.io emission.
 
-    Every 5 ticks, also runs sweep_edge_scores() to update credit assignment.
+    Sweep_edge_scores is called by orchestrator evaluate() every 5 ticks (policy-agnostic).
     """
     if env is None:
         return []
@@ -304,8 +306,6 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
     now = time.time()
 
     tick = env.world.tick
-    if tick > 0 and tick % 5 == 0:
-        sweep_edge_scores(tick)
 
     LLM_AGENTS_PER_STEP = ["management_1", "procurement_1"]
 

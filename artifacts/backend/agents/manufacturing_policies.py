@@ -41,11 +41,36 @@ OVERRIDABLE_RULES = {
 
 
 def apply_policy_override(rule: str, value: object) -> tuple[bool, str]:
-    """Write a policy override.  Returns (ok, message)."""
+    """Write a policy override with type coercion and range validation.
+
+    Returns (ok, message). LLM output may arrive as strings or wrong numeric types,
+    so the value is coerced to match the default type before storing.
+    """
     if rule not in OVERRIDABLE_RULES:
         return False, f"Unknown rule '{rule}'. Valid rules: {list(OVERRIDABLE_RULES)}"
-    _policy_overrides[rule] = value
-    return True, f"Policy override applied: {rule} = {value!r}"
+    default = OVERRIDABLE_RULES[rule]
+    try:
+        coerced: object
+        if isinstance(default, float):
+            coerced = float(value)  # type: ignore[arg-type]
+        elif isinstance(default, int):
+            coerced = int(float(value))  # type: ignore[arg-type]
+        elif default is None:
+            # No type hint from default — try numeric coercion; fall back to raw value
+            try:
+                as_float = float(value)  # type: ignore[arg-type]
+                coerced = int(as_float) if as_float == int(as_float) else as_float
+            except (TypeError, ValueError):
+                coerced = value
+        else:
+            coerced = value
+        # Basic sanity: numeric values must be positive
+        if isinstance(coerced, (int, float)) and coerced < 0:
+            return False, f"Invalid value for '{rule}': must be >= 0, got {coerced}"
+    except (TypeError, ValueError) as exc:
+        return False, f"Invalid value for '{rule}': cannot coerce {value!r} — {exc}"
+    _policy_overrides[rule] = coerced
+    return True, f"Policy override applied: {rule} = {coerced!r}"
 
 
 def get_rule(rule: str) -> object:

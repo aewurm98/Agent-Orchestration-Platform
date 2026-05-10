@@ -80,8 +80,8 @@ def _run_taguchi_evaluation(configs: list[dict], ticks: int = 50):
     environment with ScriptedGreedyPolicy.
 
     Returns (best_config, best_genome, best_env, baseline_log) where best_env is
-    already stepped to tick `ticks` from the winning configuration — the caller
-    can hand it directly to set_active_env_v2 as the generation-0 parent env.
+    a FRESH env (tick=0) instantiated from the winning genome config — evaluation
+    envs are discarded so generation-0 always starts from a clean initial state.
     """
     from evolution.manufacturing_genome import ManufacturingGenome
     from game_envs.manufacturing_v2.env import ManufacturingEnvV2
