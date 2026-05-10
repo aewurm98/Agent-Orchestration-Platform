@@ -34,6 +34,7 @@ class ArenaState(TypedDict):
     accepted_fitness: float          # highest fitness ever accepted by elitism
     saved_agent_configs: list[dict]  # snapshot of agent_configs at last accepted generation
     saved_topology: dict             # snapshot of topology at last accepted generation
+    policy_mode: str                 # "llm" | "scripted" | "random" — gates LLM calls in agent_step
     topology_diff: str
     latency: float
     cost: float
@@ -241,11 +242,15 @@ def topology_init(state: ArenaState) -> ArenaState:
 async def agent_step(state: ArenaState) -> ArenaState:
     """Run one tick of the active agent population."""
     if state.get("scenario") == "manufacturing":
-        from agents.manufacturing_roles import run_manufacturing_v2_step
         from agents import manufacturing_roles
         generation = state.get("generation", 0)
         env = manufacturing_roles._env_v2 or manufacturing_roles._env
-        new_traces = await run_manufacturing_v2_step(generation, env) if env else []
+        # Only invoke LLM in llm policy mode — scripted/random must not trigger LLM calls
+        if state.get("policy_mode", "scripted") == "llm" and env is not None:
+            from agents.manufacturing_roles import run_manufacturing_v2_step
+            new_traces = await run_manufacturing_v2_step(generation, env)
+        else:
+            new_traces = []
         state["traces"] = state.get("traces", []) + new_traces
     else:
         # Stub for other scenarios — future LLM integration
@@ -574,6 +579,7 @@ def _make_initial_state(scenario: str, run_id: str, max_generations: int) -> Are
         accepted_fitness=0.0,
         saved_agent_configs=[],
         saved_topology={},
+        policy_mode="scripted",
         topology_diff="+0/0 edges",
         latency=0.0,
         cost=0.0,
@@ -619,6 +625,7 @@ async def run_one_generation(existing_state: dict) -> dict:
     existing_state.setdefault("genome_config", {})
     existing_state.setdefault("saved_agent_configs", existing_state.get("agent_configs", []))
     existing_state.setdefault("saved_topology", existing_state.get("topology", {}))
+    existing_state.setdefault("policy_mode", "scripted")
 
     graph = _build_step_graph()
     result = await graph.ainvoke(

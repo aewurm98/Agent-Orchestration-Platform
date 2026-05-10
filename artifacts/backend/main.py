@@ -247,6 +247,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "current_fitness": 0.0,
             "parent_fitness": 0.0,
             "accepted_fitness": _best_fitness_at_init,
+            "policy_mode": str(active_run.get("policy", "scripted")),
             "saved_agent_configs": [
                 {"agent_id": aid, "role": a.role.value}
                 for aid, a in env.world.agents.items()
@@ -315,10 +316,11 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 await sio.emit("metrics_update", env.get_metrics())
                 orch_state = await run_one_generation(orch_state)
                 generation: int = orch_state.get("generation", 0)
-                current_fitness: float = env.get_fitness()
-                parent_fitness: float = orch_state.get("parent_fitness", current_fitness * 0.9)
-                orch_state["current_fitness"] = current_fitness
-                orch_state["parent_fitness"] = parent_fitness
+                # Use orchestrator-managed fitness values as source of truth;
+                # do NOT overwrite current_fitness/parent_fitness here — that
+                # would bypass elitism bookkeeping performed inside mutate().
+                current_fitness = orch_state.get("current_fitness", 0.0)
+                parent_fitness = orch_state.get("parent_fitness", 0.0)
 
                 await sio.emit("fitness_update", {
                     "generation": generation,
