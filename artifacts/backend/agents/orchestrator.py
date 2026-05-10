@@ -8,6 +8,7 @@ run_one_generation() — single LangGraph cycle from agent_step onwards
 """
 from __future__ import annotations
 
+import copy
 import random
 import time
 from typing import TypedDict
@@ -41,6 +42,10 @@ class ArenaState(TypedDict):
     checkpoint_key: str
     run_id: str
     traces: list[dict]
+    stagnation_counter: int
+    fitness_history: list[float]
+    prev_penalty_cost: float
+    taguchi_baseline_log: list[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +69,70 @@ def goal_intake(state: ArenaState) -> ArenaState:
     return state
 
 
+def _run_taguchi_evaluation(configs: list[dict], ticks: int = 50) -> tuple[dict, list[dict]]:
+    """
+    Evaluate each Taguchi L9 config by running `ticks` ticks of the manufacturing
+    environment with ScriptedGreedyPolicy.  Returns (best_config, baseline_log).
+    """
+    from evolution.manufacturing_genome import ManufacturingGenome
+    from game_envs.manufacturing_v2.env import ManufacturingEnvV2
+    from agents.manufacturing_policies import ScriptedGreedyPolicy
+
+    policy = ScriptedGreedyPolicy()
+    best_fitness = float("-inf")
+    best_config = configs[0]
+    baseline_log: list[dict] = []
+
+    for idx, cfg in enumerate(configs):
+        genome = ManufacturingGenome(
+            agent_counts={
+                "procurement": int(cfg.get("procurement_count", 1)),
+                "operations":  int(cfg.get("operations_count", 2)),
+                "engineering": 1,
+                "sales": 1,
+                "management": 1,
+            },
+            order_arrival_rate=float(cfg.get("order_arrival_rate", 12.0)),
+        )
+        env_config = genome.to_env_config()
+        env = ManufacturingEnvV2(env_config)
+
+        for _ in range(ticks):
+            if env.done:
+                break
+            actions = policy.get_all_actions(env.world)
+            env.step(actions)
+
+        fitness = env.get_fitness()
+        baseline_log.append({"config_idx": idx, "config": cfg, "fitness": fitness})
+
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_config = cfg
+
+    return best_config, baseline_log
+
+
 def topology_init(state: ArenaState) -> ArenaState:
-    """Initialise the agent graph topology from Taguchi L9 sample."""
+    """Initialise the agent graph topology.
+
+    For the manufacturing scenario: evaluate all 9 Taguchi L9 configurations
+    for 50 ticks each using ScriptedGreedyPolicy; the best-scoring configuration
+    becomes the generation-0 parent.  For other scenarios: sample Taguchi L9
+    configs directly.
+    """
     if state.get("scenario") == "manufacturing":
         from agents.manufacturing_roles import ALL_MANUFACTURING_AGENT_CONFIGS
+
+        param_grid = {
+            "procurement_count":  [1, 2, 3],
+            "operations_count":   [1, 3, 5],
+            "order_arrival_rate": [8.0, 12.0, 18.0],
+        }
+        taguchi_configs = TaguchiL9Sample(param_grid)
+        best_cfg, baseline_log = _run_taguchi_evaluation(taguchi_configs, ticks=50)
+
+        state["taguchi_baseline_log"] = baseline_log
         state["agent_configs"] = list(ALL_MANUFACTURING_AGENT_CONFIGS)
         state["topology"] = {
             "nodes": ["planner_1", "worker_raw_materials", "worker_intermediates", "worker_finished_product"],
@@ -88,6 +153,16 @@ def topology_init(state: ArenaState) -> ArenaState:
             "worker_intermediates->planner_1": 0.7,
             "worker_finished_product->planner_1": 0.7,
         }
+
+        from agents.manufacturing_roles import init_edge_scores
+        init_edge_scores(state["edge_scores"])
+
+        best_summary = f"best cfg: procurement={best_cfg.get('procurement_count')}, ops={best_cfg.get('operations_count')}, order_rate={best_cfg.get('order_arrival_rate')}"
+        state["traces"] = state.get("traces", []) + [{
+            "role": "system",
+            "content": f"Taguchi L9 init complete — {best_summary}",
+            "timestamp": time.time(),
+        }]
     else:
         sample_configs = TaguchiL9Sample({
             "model": ["claude-3-haiku", "claude-3-sonnet", "claude-3-5-sonnet"],
@@ -110,6 +185,7 @@ def topology_init(state: ArenaState) -> ArenaState:
             "orchestrator->worker_2": 0.5,
             "evaluator->orchestrator": 0.9,
         }
+
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
         "content": f"Topology initialised with {len(state['topology']['nodes'])} agents",
@@ -138,23 +214,93 @@ async def agent_step(state: ArenaState) -> ArenaState:
     return state
 
 
+def _compute_confidence(state: ArenaState) -> float:
+    """
+    Compute confidence kappa from real environment metrics.
+
+    Starts at 1.0 and applies reductions:
+      - subtract 0.4 if missed-order ratio > 0.20
+      - subtract 0.3 if penalty cost increased by more than 50% since last tick
+      - subtract 0.3 if fitness has declined for 3 consecutive generations
+
+    Result is clamped to [0.0, 1.0].
+    """
+    kappa = 1.0
+
+    if state.get("scenario") == "manufacturing":
+        from agents import manufacturing_roles
+        env = manufacturing_roles._env_v2 or manufacturing_roles._env
+        if env is not None:
+            try:
+                econ = env.world.economy if hasattr(env, "world") else None
+                if econ is not None:
+                    fulfilled = econ._orders_fulfilled
+                    missed = econ._orders_missed
+                    total_orders = fulfilled + missed
+                    missed_ratio = missed / max(total_orders, 1)
+                    if missed_ratio > 0.20:
+                        kappa -= 0.4
+
+                    current_penalties = econ.pl.penalties
+                    prev_penalties = state.get("prev_penalty_cost", 0.0)
+                    if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
+                        kappa -= 0.3
+            except Exception:
+                pass
+
+    fitness_history = state.get("fitness_history", [])
+    if len(fitness_history) >= 3:
+        last_three = fitness_history[-3:]
+        if last_three[0] > last_three[1] > last_three[2]:
+            kappa -= 0.3
+
+    return round(max(0.0, min(1.0, kappa)), 2)
+
+
 def evaluate(state: ArenaState) -> ArenaState:
-    """Score generation with CLEAR fitness function."""
+    """Score generation with CLEAR fitness function and metric-derived confidence."""
     latency = random.uniform(0.2, 1.5)
     cost = random.uniform(0.001, 0.05)
     success_rate = random.uniform(0.3, 0.95)
 
     if state.get("scenario") == "manufacturing":
         from agents import manufacturing_roles
-        if manufacturing_roles._env is not None:
-            success_rate = manufacturing_roles._env.get_objective_value()
+        env = manufacturing_roles._env_v2 or manufacturing_roles._env
+        if env is not None:
+            try:
+                success_rate = env.get_objective_value() if hasattr(env, "get_objective_value") else env.get_fitness()
+            except Exception:
+                pass
+
+        # Pull updated edge scores from the credit assignment module
+        updated_edge_scores = dict(manufacturing_roles._edge_scores)
+        if updated_edge_scores:
+            merged = dict(state.get("edge_scores", {}))
+            merged.update(updated_edge_scores)
+            state["edge_scores"] = merged
+
+        # Capture current penalty cost for next tick's confidence comparison
+        try:
+            env_inner = manufacturing_roles._env_v2 or manufacturing_roles._env
+            if env_inner is not None and hasattr(env_inner, "world"):
+                state["prev_penalty_cost"] = env_inner.world.economy.pl.penalties
+        except Exception:
+            pass
 
     fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
     state["parent_fitness"] = state.get("current_fitness", 0.0)
     state["current_fitness"] = round(fitness, 4)
     state["latency"] = round(latency, 3)
     state["cost"] = round(cost, 5)
-    state["confidence"] = round(random.uniform(0.3, 0.95), 2)
+
+    fitness_history = list(state.get("fitness_history", []))
+    fitness_history.append(state["current_fitness"])
+    if len(fitness_history) > 10:
+        fitness_history = fitness_history[-10:]
+    state["fitness_history"] = fitness_history
+
+    state["confidence"] = _compute_confidence(state)
+
     state["traces"] = state.get("traces", []) + [{
         "role": "evaluator",
         "content": f"Fitness={state['current_fitness']}, confidence={state['confidence']}",
@@ -179,16 +325,71 @@ def hitl_gate(state: ArenaState) -> ArenaState:
 
 
 def mutate(state: ArenaState) -> ArenaState:
-    """Apply semantic mutation + Graph-GRPO edge pruning."""
+    """Apply semantic mutation + Graph-GRPO edge pruning with elitism and edge regrowth.
+
+    Elitism: if the just-evaluated child fitness is strictly worse than the parent,
+    the semantic mutation is skipped (configs and topology are not changed) and
+    stagnation_counter is incremented.  Only when child >= parent do we accept
+    and mutate toward the next generation.
+
+    Edge regrowth: before pruning, with 5% probability a random directed edge is
+    added at score 0.5, giving pruned topologies a path back to connectivity.
+    """
+    current_fitness = state.get("current_fitness", 0.0)
+    parent_fitness = state.get("parent_fitness", 0.0)
+    stagnation_counter = state.get("stagnation_counter", 0)
+
+    # --- Elitism check ---
+    if current_fitness < parent_fitness:
+        # Child is strictly worse — reject, do not mutate
+        stagnation_counter += 1
+        state["stagnation_counter"] = stagnation_counter
+        state["topology_diff"] = "+0/0 edges (elitism: reverted)"
+        state["generation"] = state.get("generation", 0) + 1
+        state["traces"] = state.get("traces", []) + [{
+            "role": "system",
+            "content": (
+                f"Elitism: child fitness {current_fitness:.4f} < parent {parent_fitness:.4f} — "
+                f"mutation rejected (stagnation={stagnation_counter})"
+            ),
+            "timestamp": time.time(),
+        }]
+        return state
+
+    # Accept child — reset stagnation
+    state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
 
+    # --- Edge regrowth (5% chance) ---
+    nodes = state.get("topology", {}).get("nodes", [])
+    if nodes and random.random() < 0.05:
+        src = random.choice(nodes)
+        tgt = random.choice(nodes)
+        if src != tgt:
+            existing_edges = state["topology"].get("edges", [])
+            existing_set = {(e[0], e[1]) if isinstance(e, (list, tuple)) else e for e in existing_edges}
+            new_edge = (src, tgt)
+            if new_edge not in existing_set:
+                state["topology"] = copy.deepcopy(state["topology"])
+                state["topology"]["edges"] = list(existing_edges) + [new_edge]
+                edge_key = f"{src}->{tgt}"
+                if edge_key not in state["edge_scores"]:
+                    state["edge_scores"] = dict(state["edge_scores"])
+                    state["edge_scores"][edge_key] = 0.5
+                state["traces"] = state.get("traces", []) + [{
+                    "role": "system",
+                    "content": f"Edge regrowth: sprouted {edge_key} at score 0.5",
+                    "timestamp": time.time(),
+                }]
+
+    # --- Semantic mutation (non-manufacturing configs) ---
     if state.get("scenario") == "manufacturing":
-        # For manufacturing, skip mutating agent_configs (they're role definitions, not GA candidates)
         pass
     else:
         for i, cfg in enumerate(state.get("agent_configs", [])):
             state["agent_configs"][i] = SemanticMutation(cfg)
 
+    # --- Graph-GRPO pruning ---
     pruned = GraphGRPOPrune(state["topology"], state["edge_scores"])
     state["topology"] = pruned
     after_edge_count = len(pruned.get("edges", []))
@@ -312,6 +513,10 @@ def _make_initial_state(scenario: str, run_id: str, max_generations: int) -> Are
         checkpoint_key="",
         run_id=run_id,
         traces=[],
+        stagnation_counter=0,
+        fitness_history=[],
+        prev_penalty_cost=0.0,
+        taguchi_baseline_log=[],
     )
 
 
@@ -332,6 +537,12 @@ async def run_orchestrator(
 
 async def run_one_generation(existing_state: dict) -> dict:
     """Run a single LangGraph generation cycle from agent_step onwards."""
+    # Ensure new fields are present for backward compatibility with older states
+    existing_state.setdefault("stagnation_counter", 0)
+    existing_state.setdefault("fitness_history", [])
+    existing_state.setdefault("prev_penalty_cost", 0.0)
+    existing_state.setdefault("taguchi_baseline_log", [])
+
     graph = _build_step_graph()
     result = await graph.ainvoke(
         existing_state,

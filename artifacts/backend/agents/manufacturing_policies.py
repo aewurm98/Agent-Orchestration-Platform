@@ -5,6 +5,10 @@ Three tiers:
   - RandomPolicy:        Uniform random valid action each tick.
   - ScriptedGreedyPolicy: Priority-rule heuristic (functional but not optimal).
   - LLMPolicy:           Wrapper around manufacturing_roles LLM agents.
+
+Policy overrides allow Management LLM agents to mutate scripted rules at runtime
+via the `update_policy` skill.  Call apply_policy_override(rule, value) to write
+a new rule; ScriptedGreedyPolicy reads from _policy_overrides at decision time.
 """
 from __future__ import annotations
 
@@ -19,6 +23,36 @@ from game_envs.manufacturing_v2.entities import (
     Machine, MachineState, MachineType,
 )
 from game_envs.manufacturing_v2.recipes import RECIPES
+
+
+# ---------------------------------------------------------------------------
+# Runtime policy overrides — Management LLM agents write here via update_policy
+# ---------------------------------------------------------------------------
+
+_policy_overrides: dict[str, object] = {}
+
+OVERRIDABLE_RULES = {
+    "replenishment_urgency_threshold": 3,
+    "operations_pickup_radius": None,
+    "engineering_idle_repair_trigger": 0,
+    "management_hire_engineer_threshold": 1,
+    "management_hire_ops_budget_floor": 300,
+}
+
+
+def apply_policy_override(rule: str, value: object) -> tuple[bool, str]:
+    """Write a policy override.  Returns (ok, message)."""
+    if rule not in OVERRIDABLE_RULES:
+        return False, f"Unknown rule '{rule}'. Valid rules: {list(OVERRIDABLE_RULES)}"
+    _policy_overrides[rule] = value
+    return True, f"Policy override applied: {rule} = {value!r}"
+
+
+def get_rule(rule: str) -> object:
+    """Fetch the effective value of a rule, checking overrides first."""
+    if rule in _policy_overrides:
+        return _policy_overrides[rule]
+    return OVERRIDABLE_RULES[rule]
 
 
 class BasePolicy:
@@ -69,7 +103,10 @@ class RandomPolicy(BasePolicy):
 
 class ScriptedGreedyPolicy(BasePolicy):
     """
-    Priority heuristic:
+    Priority heuristic — all threshold rules are read from _policy_overrides so
+    Management LLM agents can tune behaviour at runtime via update_policy.
+
+    Decision order:
     1. If carrying item → deliver to nearest appropriate machine / dock.
     2. If not carrying → pickup nearest available item.
     3. If no items visible → move toward machine with output_ready.
@@ -99,13 +136,15 @@ class ScriptedGreedyPolicy(BasePolicy):
     def _procurement_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
         cell = world.grid[agent.row][agent.col]
 
+        replenishment_threshold = int(get_rule("replenishment_urgency_threshold"))
+
         if len(agent.inventory) < agent.carry_capacity():
             if cell == CellType.LOADING_DOCK and agent.purchase_cooldown == 0:
                 needed = self._most_needed_raw(world)
                 return {"type": "purchase", "params": {"item_type": needed.value, "qty": 1}}
 
         if agent.inventory:
-            target = self._nearest_machine_needing_input(agent, world)
+            target = self._nearest_machine_needing_input(agent, world, input_threshold=replenishment_threshold)
             if target:
                 return {"type": "deliver_to_machine", "params": {"machine_id": target.id}}
 
@@ -116,6 +155,8 @@ class ScriptedGreedyPolicy(BasePolicy):
         return {"type": "wait", "params": {}}
 
     def _operations_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
+        pickup_radius = get_rule("operations_pickup_radius")
+
         if agent.inventory:
             target = self._nearest_machine_needing_input(agent, world)
             if target:
@@ -125,22 +166,35 @@ class ScriptedGreedyPolicy(BasePolicy):
         output_ready = [m for m in world.machines.values() if m.state == MachineState.OUTPUT_READY]
         if output_ready:
             nearest = min(output_ready, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
-            adj = self._find_adjacent_floor(nearest, world)
-            if adj and (agent.row, agent.col) in [adj]:
-                return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
-            if adj:
-                return {"type": "go_to", "params": {"row": adj[0], "col": adj[1]}}
+            if pickup_radius is not None:
+                dist = abs(nearest.row - agent.row) + abs(nearest.col - agent.col)
+                if dist > int(pickup_radius):
+                    output_ready = []
+            if output_ready:
+                adj = self._find_adjacent_floor(nearest, world)
+                if adj and (agent.row, agent.col) in [adj]:
+                    return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
+                if adj:
+                    return {"type": "go_to", "params": {"row": adj[0], "col": adj[1]}}
 
         floor_items = [i for i in world.items.values() if i.carrier_id is None and i.row is not None]
         if floor_items:
-            nearest = min(floor_items, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
-            return {"type": "pickup_nearest", "params": {"item_type": nearest.item_type.value}}
+            if pickup_radius is not None:
+                floor_items = [
+                    i for i in floor_items
+                    if abs(i.row - agent.row) + abs(i.col - agent.col) <= int(pickup_radius)
+                ]
+            if floor_items:
+                nearest = min(floor_items, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
+                return {"type": "pickup_nearest", "params": {"item_type": nearest.item_type.value}}
 
         return self._wander(agent)
 
     def _engineering_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
+        idle_repair_trigger = int(get_rule("engineering_idle_repair_trigger"))
+
         broken = [m for m in world.machines.values() if m.state == MachineState.BROKEN]
-        if broken:
+        if len(broken) > idle_repair_trigger:
             nearest = min(broken, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
             adj = self._find_adjacent_floor(nearest, world)
             from game_envs.manufacturing_v2.actions import is_adjacent
@@ -186,16 +240,19 @@ class ScriptedGreedyPolicy(BasePolicy):
         return self._wander(agent)
 
     def _management_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
+        hire_eng_threshold = int(get_rule("management_hire_engineer_threshold"))
+        hire_ops_budget_floor = int(get_rule("management_hire_ops_budget_floor"))
+
         broken_cnt = sum(1 for m in world.machines.values() if m.state == MachineState.BROKEN)
         engineers = [a for a in world.agents.values() if a.role == AgentRole.ENGINEERING]
-        if broken_cnt > len(engineers) and world.economy.budget > 500:
+        if broken_cnt >= hire_eng_threshold and broken_cnt > len(engineers) and world.economy.budget > 500:
             return {"type": "hire", "params": {"agent_type": "engineering"}}
 
         idle_ops = sum(
             1 for a in world.agents.values()
             if a.role == AgentRole.OPERATIONS and a.state == AgentState.IDLE
         )
-        if idle_ops == 0 and world.economy.budget > 300:
+        if idle_ops == 0 and world.economy.budget > hire_ops_budget_floor:
             bottleneck = self._find_bottleneck_machine(world)
             if bottleneck:
                 return {"type": "hire", "params": {"agent_type": "operations"}}
@@ -219,7 +276,12 @@ class ScriptedGreedyPolicy(BasePolicy):
             return ItemType.RAW_SILICON
         return ItemType.RAW_ORE
 
-    def _nearest_machine_needing_input(self, agent: Agent, world: "WorldModel") -> Optional[Machine]:
+    def _nearest_machine_needing_input(
+        self,
+        agent: Agent,
+        world: "WorldModel",
+        input_threshold: int = 3,
+    ) -> Optional[Machine]:
         if not agent.inventory:
             return None
         carrying_types = {i.item_type for i in agent.inventory}
@@ -227,7 +289,7 @@ class ScriptedGreedyPolicy(BasePolicy):
         for m in world.machines.values():
             if m.state in (MachineState.BROKEN, MachineState.OFFLINE):
                 continue
-            if len(m.input_queue) >= 3:
+            if len(m.input_queue) >= input_threshold:
                 continue
             recipe = RECIPES.get(m.machine_type, {})
             needed_types = {itype for itype, _ in recipe.get("inputs", [])}
