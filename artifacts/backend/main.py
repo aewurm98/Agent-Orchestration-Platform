@@ -321,11 +321,14 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 # would bypass elitism bookkeeping performed inside mutate().
                 current_fitness = orch_state.get("current_fitness", 0.0)
                 parent_fitness = orch_state.get("parent_fitness", 0.0)
+                # accepted_fitness is the all-time elitism best — always non-decreasing.
+                # Use it as best_fitness so the plot line can never go backwards.
+                accepted_fitness = orch_state.get("accepted_fitness", current_fitness)
 
                 await sio.emit("fitness_update", {
                     "generation": generation,
                     "parent_fitness": round(parent_fitness, 4),
-                    "best_fitness": round(current_fitness, 4),
+                    "best_fitness": round(accepted_fitness, 4),
                     "mutation_type": "scripted",
                     "topology_diff": f"+{game_tick_counter}/0 ticks",
                     "cost_per_task": round(random.uniform(0.001, 0.05), 5),
@@ -398,6 +401,8 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             generation: int = orch_state.get("generation", 0)
             current_fitness: float = orch_state.get("current_fitness", 0.0)
             parent_fitness: float = orch_state.get("parent_fitness", 0.0)
+            # accepted_fitness is the monotone all-time elitism best (never decreases).
+            accepted_fitness_sc: float = orch_state.get("accepted_fitness", current_fitness)
             latency: float = orch_state.get("latency", random.uniform(0.2, 1.5))
             cost: float = orch_state.get("cost", random.uniform(0.001, 0.05))
             topology_diff: str = orch_state.get("topology_diff", "+0/0 edges")
@@ -409,7 +414,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             await sio.emit("fitness_update", {
                 "generation": generation,
                 "parent_fitness": round(parent_fitness, 4),
-                "best_fitness": round(current_fitness, 4),
+                "best_fitness": round(accepted_fitness_sc, 4),
                 "mutation_type": mutation_type,
                 "topology_diff": topology_diff,
                 "cost_per_task": round(cost, 5),

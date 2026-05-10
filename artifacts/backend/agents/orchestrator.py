@@ -553,10 +553,10 @@ def _build_full_graph() -> StateGraph:
     graph.add_edge("topology_init", "agent_step")
     graph.add_edge("agent_step", "evaluate")
     graph.add_edge("evaluate", "hitl_gate")
-    graph.add_conditional_edges("hitl_gate", _hitl_route, {
-        "hitl": "checkpoint",
-        "continue": "mutate",
-    })
+    # hitl_gate always proceeds to mutate — elitism and generation increment must
+    # always execute.  HITL pause is handled in main.py by checking hitl_pending
+    # after run_one_generation returns; the graph itself never skips mutate.
+    graph.add_edge("hitl_gate", "mutate")
     graph.add_edge("mutate", "checkpoint")
     graph.add_conditional_edges("checkpoint", _continue_route, {
         "done": END,
@@ -567,7 +567,11 @@ def _build_full_graph() -> StateGraph:
 
 
 def _build_step_graph() -> StateGraph:
-    """Single-generation graph: agent_step → evaluate → hitl_gate → mutate/checkpoint → END."""
+    """Single-generation graph: agent_step → evaluate → hitl_gate → mutate → checkpoint → END.
+
+    hitl_gate only sets the hitl_pending flag; it never bypasses mutate.
+    Elitism and generation increment run every cycle without exception.
+    """
     graph = StateGraph(ArenaState)
 
     graph.add_node("agent_step", agent_step)
@@ -579,10 +583,7 @@ def _build_step_graph() -> StateGraph:
     graph.set_entry_point("agent_step")
     graph.add_edge("agent_step", "evaluate")
     graph.add_edge("evaluate", "hitl_gate")
-    graph.add_conditional_edges("hitl_gate", _hitl_route, {
-        "hitl": "checkpoint",
-        "continue": "mutate",
-    })
+    graph.add_edge("hitl_gate", "mutate")
     graph.add_edge("mutate", "checkpoint")
     graph.add_edge("checkpoint", END)
 
