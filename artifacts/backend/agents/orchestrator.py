@@ -50,7 +50,10 @@ class ArenaState(TypedDict):
     fitness_history: list[float]
     prev_penalty_cost: float
     taguchi_baseline_log: list[dict]
-    genome_config: dict              # winning Taguchi L9 genome params for manufacturing
+    genome_config: dict              # ManufacturingGenome.to_dict() for manufacturing
+    boundary_mode: str               # "INTRA" continuous | "INTER" episodic per-generation reset
+    mutation_strategy: str           # "MATH" heuristic perturbation | "LLM" meta-optimizer
+    inter_ticks: int                 # episode length (ticks) used in INTER mode
 
 
 # ---------------------------------------------------------------------------
@@ -240,26 +243,70 @@ def topology_init(state: ArenaState) -> ArenaState:
 
 
 async def agent_step(state: ArenaState) -> ArenaState:
-    """Run one tick of the active agent population."""
-    if state.get("scenario") == "manufacturing":
+    """Run one tick (INTRA) or a full episode (INTER) of the active agent population.
+
+    INTER mode: reset env with the current genome, run exactly T_max ticks using
+    ScriptedGreedyPolicy, then return so evaluate() can score cumulative fitness.
+    INTRA mode (default): invoke one LLM step when policy_mode == "llm"; otherwise
+    the env is ticked in the outer main.py loop and this node is a lightweight hook.
+    """
+    scenario = state.get("scenario", "")
+    boundary_mode = state.get("boundary_mode", "INTRA")
+
+    if scenario == "manufacturing":
         from agents import manufacturing_roles
         generation = state.get("generation", 0)
-        env = manufacturing_roles._env_v2 or manufacturing_roles._env
-        # Only invoke LLM in llm policy mode — scripted/random must not trigger LLM calls
-        if state.get("policy_mode", "scripted") == "llm" and env is not None:
-            from agents.manufacturing_roles import run_manufacturing_v2_step
-            new_traces = await run_manufacturing_v2_step(generation, env)
+
+        if boundary_mode == "INTER":
+            # ── INTER: reset env with genome and run a complete episode ──────
+            from evolution.manufacturing_genome import ManufacturingGenome
+            from game_envs.manufacturing_v2.env import ManufacturingEnvV2
+            from agents.manufacturing_policies import ScriptedGreedyPolicy
+
+            genome_cfg = state.get("genome_config", {})
+            if genome_cfg and "agent_counts" in genome_cfg:
+                genome = ManufacturingGenome.from_dict(genome_cfg)
+            else:
+                genome = ManufacturingGenome.default()
+
+            new_env = ManufacturingEnvV2(genome.to_env_config())
+            manufacturing_roles.set_active_env_v2(new_env)
+
+            T_max = state.get("inter_ticks", 100)
+            policy = ScriptedGreedyPolicy()
+            ticks_run = 0
+            for _ in range(T_max):
+                if new_env.done:
+                    break
+                actions = policy.get_all_actions(new_env.world)
+                new_env.world.tick_advance(actions)
+                ticks_run += 1
+
+            state["traces"] = state.get("traces", []) + [{
+                "role": "system",
+                "content": (
+                    f"[Gen {generation}] INTER episode: "
+                    f"{ticks_run}/{T_max} ticks, "
+                    f"fitness={round(new_env.get_fitness(), 4)}"
+                ),
+                "timestamp": time.time(),
+            }]
+
         else:
-            new_traces = []
-        state["traces"] = state.get("traces", []) + new_traces
+            # ── INTRA: single LLM step when policy demands it ────────────────
+            env = manufacturing_roles._env_v2 or manufacturing_roles._env
+            if state.get("policy_mode", "scripted") == "llm" and env is not None:
+                from agents.manufacturing_roles import run_manufacturing_v2_step
+                new_traces = await run_manufacturing_v2_step(generation, env)
+                state["traces"] = state.get("traces", []) + new_traces
+
     else:
-        # Stub for other scenarios — future LLM integration
         for _cfg in state.get("agent_configs", []):
             pass
 
     state["traces"] = state.get("traces", []) + [{
         "role": "orchestrator",
-        "content": f"[Gen {state['generation']}] Agent step complete",
+        "content": f"[Gen {state['generation']}] Agent step complete ({boundary_mode})",
         "timestamp": time.time(),
     }]
     return state
@@ -419,18 +466,26 @@ def _apply_edge_regrowth(state: ArenaState) -> None:
     }]
 
 
-def mutate(state: ArenaState) -> ArenaState:
-    """Apply semantic mutation + Graph-GRPO edge pruning with elitism and edge regrowth.
+async def mutate(state: ArenaState) -> ArenaState:
+    """Apply genome mutation + Graph-GRPO edge pruning with (1+1)-EA elitism.
 
-    Elitism: compare current_fitness against accepted_fitness (the highest fitness
-    ever accepted by elitism, initialized at generation-0 Taguchi winner score).
-    If the child is strictly worse, mutation is skipped and stagnation_counter
-    increments.  Only when child >= accepted_fitness do we accept and mutate.
-    This ensures the fitness curve can only plateau or rise between accepted
-    generations — it never regresses.
+    Mutation strategy:
+      MATH — ManufacturingGenome.mutate() heuristic perturbation (or SemanticMutation
+             for non-manufacturing scenarios).
+      LLM  — Meta-optimizer: build episode digest, query gpt-5-mini, apply JSON delta
+             to genome_config; falls back to MATH on any LLM error.
 
-    Edge regrowth: before pruning, with 5% probability a random directed edge is
-    added at score 0.5, giving pruned topologies a path back to connectivity.
+    Boundary mode:
+      INTRA — genome changes apply to the continuously running env on the next step.
+      INTER — genome changes are picked up by agent_step's env reset next generation.
+
+    Elitism:
+      Child accepted when current_fitness >= immediate parent_fitness.
+      Rejected child: restore parent snapshot + increment stagnation_counter.
+      accepted_fitness tracks the all-time elitism best (monotone non-decreasing).
+
+    Edge regrowth: with 5% probability a random directed edge is added at score 0.5,
+    applied on both accept and reject so every generation has a chance of regrowth.
     """
     current_fitness = state.get("current_fitness", 0.0)
     parent_fitness = state.get("parent_fitness", 0.0)
@@ -481,14 +536,63 @@ def mutate(state: ArenaState) -> ArenaState:
     state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
 
-    # --- Semantic mutation (non-manufacturing configs) ---
-    if state.get("scenario") == "manufacturing":
-        pass
-    else:
-        for i, cfg in enumerate(state.get("agent_configs", [])):
-            state["agent_configs"][i] = SemanticMutation(cfg)
+    # ── Genome / agent-config mutation ────────────────────────────────────────
+    scenario = state.get("scenario", "")
+    mutation_strategy = state.get("mutation_strategy", "MATH")
 
-    # --- Graph-GRPO pruning ---
+    mutation_label = mutation_strategy
+
+    if mutation_strategy == "LLM":
+        # ── LLM meta-optimizer path ───────────────────────────────────────────
+        try:
+            from agents.meta_optimizer import query_meta_optimizer, apply_genome_delta
+            from agents import manufacturing_roles as _mr
+            _meta_env = _mr._env_v2 if scenario == "manufacturing" else None
+            delta = await query_meta_optimizer(state, _meta_env)
+            state["genome_config"] = apply_genome_delta(
+                state.get("genome_config", {}), delta, scenario
+            )
+            reasoning = state.get("genome_config", {}).get("_llm_reasoning", "")
+            if reasoning:
+                state["traces"] = state.get("traces", []) + [{
+                    "role": "system",
+                    "content": f"LLM meta-optimizer: {reasoning}",
+                    "timestamp": time.time(),
+                }]
+        except Exception as _llm_exc:
+            # Fall back to MATH on any LLM error so the loop is never blocked
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "LLM mutation failed (%s) — falling back to MATH", _llm_exc
+            )
+            mutation_strategy = "MATH"
+            mutation_label = "LLM→MATH(fallback)"
+
+    if mutation_strategy == "MATH":
+        # ── Heuristic perturbation path ───────────────────────────────────────
+        if scenario == "manufacturing":
+            from evolution.manufacturing_genome import ManufacturingGenome
+            genome_cfg = state.get("genome_config", {})
+            if genome_cfg and "agent_counts" in genome_cfg:
+                genome = ManufacturingGenome.from_dict(genome_cfg)
+            else:
+                genome = ManufacturingGenome.default()
+            mutated = genome.mutate()
+            state["genome_config"] = mutated.to_dict()
+            state["traces"] = state.get("traces", []) + [{
+                "role": "system",
+                "content": (
+                    f"MATH mutation: genome → "
+                    f"agents={mutated.agent_counts}, "
+                    f"order_rate={mutated.order_arrival_rate}"
+                ),
+                "timestamp": time.time(),
+            }]
+        else:
+            for i, cfg in enumerate(state.get("agent_configs", [])):
+                state["agent_configs"][i] = SemanticMutation(cfg)
+
+    # ── Graph-GRPO pruning ────────────────────────────────────────────────────
     pruned = GraphGRPOPrune(state["topology"], state["edge_scores"])
     state["topology"] = pruned
     after_edge_count = len(pruned.get("edges", []))
@@ -497,7 +601,10 @@ def mutate(state: ArenaState) -> ArenaState:
     state["generation"] = state.get("generation", 0) + 1
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
-        "content": f"Mutation complete. Now at generation {state['generation']}",
+        "content": (
+            f"Mutation complete [{mutation_label}]. "
+            f"Now at generation {state['generation']}"
+        ),
         "timestamp": time.time(),
     }]
     return state
@@ -594,7 +701,14 @@ def _build_step_graph() -> StateGraph:
 # Public API
 # ---------------------------------------------------------------------------
 
-def _make_initial_state(scenario: str, run_id: str, max_generations: int) -> ArenaState:
+def _make_initial_state(
+    scenario: str,
+    run_id: str,
+    max_generations: int,
+    boundary_mode: str = "INTRA",
+    mutation_strategy: str = "MATH",
+    inter_ticks: int = 100,
+) -> ArenaState:
     return ArenaState(
         scenario=scenario,
         objective="",
@@ -622,6 +736,9 @@ def _make_initial_state(scenario: str, run_id: str, max_generations: int) -> Are
         prev_penalty_cost=0.0,
         taguchi_baseline_log=[],
         genome_config={},
+        boundary_mode=boundary_mode,
+        mutation_strategy=mutation_strategy,
+        inter_ticks=inter_ticks,
     )
 
 
@@ -652,6 +769,9 @@ async def run_one_generation(existing_state: dict) -> dict:
     existing_state.setdefault("saved_agent_configs", existing_state.get("agent_configs", []))
     existing_state.setdefault("saved_topology", existing_state.get("topology", {}))
     existing_state.setdefault("policy_mode", "scripted")
+    existing_state.setdefault("boundary_mode", "INTRA")
+    existing_state.setdefault("mutation_strategy", "MATH")
+    existing_state.setdefault("inter_ticks", 100)
 
     graph = _build_step_graph()
     result = await graph.ainvoke(

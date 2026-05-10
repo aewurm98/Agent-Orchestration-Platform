@@ -1,0 +1,47 @@
+Technical Specification: Inter-Episode Evaluation & LLM Meta-Optimizer1. UI & Configuration StateAdd two new configuration variables to the system state, exposed via the UI frontend.A. The Dropdownsboundary_mode (Enum): Controls the simulation lifecycle."INTRA": Continuous simulation. Evaluate and mutate on the fly."INTER": Episodic simulation. Reset environment to Tick 0 every generation.mutation_strategy (Enum): Controls the mutation operator."MATH": Heuristic perturbations (random integers, cycle shifts)."LLM": Semantic generation via Meta-Optimizer.B. The UI Dependency ConstraintCritical UI Rule: The LLM-Guided optimizer requires a clean causal chain. Therefore, the UI must enforce the following:If boundary_mode == "INTRA", then mutation_strategy MUST be locked to "MATH". The "LLM" option should be disabled or hidden.If boundary_mode == "INTER", both "MATH" and "LLM" are available.2. Environment Changes for Inter-Episode ModeWhen boundary_mode == "INTER", the environment must behave as a repeatable, standalone experiment.Define $T_{max}$ (Epoch Length): The simulation must run for a fixed duration (e.g., $T_{max} = 150$ ticks) per generation.Environment Reset: At the start of every generation, call world.reset(). This must wipe the message board, reset all machine states to idle, clear inventories, and restore the starting budget.Deterministic Seeding: To ensure fitness differences are due to the genome and not RNG luck (e.g., order arrival times), set a fixed random_seed for the environment at the start of each generation.Cumulative Fitness: Instead of taking a point-in-time snapshot of the fitness, $f_t$ must be the aggregate outcome at tick $T_{max}$ (e.g., total items shipped over 150 ticks, final budget balance).3. The LLM Meta-Optimizer ImplementationWhen mutation_strategy == "LLM", the standard mathematical mutation is bypassed entirely.A. The Diagnostic AggregatorAt the end of an episode, before calling the LLM, the system must compile a plain-text Episode_Digest containing:$f_{old}$ and $f_{current}$Total Profit ($\pi$) and Total Shipped ($\sigma$)Total Penalties ($P$) and the top 2 highest-penalty occurrences (e.g., "Missed Delivery: 15 times").A stringified JSON of the active genome $\mathbf{x}_t$.B. The Meta-Optimizer PromptThe system will make a synchronous call to an LLM (e.g., gpt-4o or gemini-1.5-pro) using response_format={"type": "json_object"}.System Prompt:You are the Meta-Optimizer for a manufacturing multi-agent simulation. Your goal is to maximize throughput and profit by adjusting the factory's structural genome and the system prompts for the Management and Procurement agents.You are evaluating an episodic simulation that ran for a fixed number of ticks.Here is the genome definition:agent_counts: Management (1-2), Procurement (1-3), Operations (1-5), Engineering (0-3), Sales (1-3).Analyze the provided Episode Digest. If penalties are high due to bottlenecks, change the agent counts to add physical labor, OR rewrite the agent prompts to change their strategy (e.g., instruct Procurement to buy in smaller batches).You must output valid JSON matching this schema exactly:{"analysis": "","new_agent_counts": {"management": int, "procurement": int, "operations": int, "engineering": int, "sales": int},"new_management_prompt": "","new_procurement_prompt": ""}C. The Application StepParse the JSON response.Overwrite the integer gene counts in $\mathbf{x}_t$ using new_agent_counts.Overwrite the semantic system prompts on the LLM-backed agents.4. The Unified Generational Loop (Pseudo-code)This is the exact logical flow the implementation model should write for the GenerationLoop orchestrator.PlaintextInitialize:
+  Genome X_gen = Taguchi_L9_Best()
+  f_best = -Infinity
+  History = []
+
+For gen in 1 to MAX_GENERATIONS:
+  
+  // 1. Setup Phase
+  If boundary_mode == "INTER":
+      world.reset(seed=42)
+      Inject X_gen into world
+      Run world for exactly T_max ticks
+      f_gen = world.get_cumulative_fitness()
+  Else (boundary_mode == "INTRA"):
+      Inject X_gen into world
+      Run world for N ticks
+      f_gen = world.get_point_fitness()
+      Snapshot state (X_gen, Graph_gen)
+
+  // 2. Elitism Check
+  If f_gen < f_best:
+      // Reject
+      X_gen = History.last().Genome
+      f_gen = f_best
+      If boundary_mode == "INTRA":
+          Restore Snapshot(X_gen, Graph_gen)
+  Else:
+      // Accept
+      f_best = f_gen
+      History.append({Genome: X_gen, Fitness: f_gen})
+
+  // 3. Topology Pruning / Regrowth (Applies to both modes)
+  Update_Edge_Scores()
+  Prune_Edges(threshold=0.3)
+  Sprout_Random_Edge(prob=0.05)
+
+  // 4. Mutation Phase
+  If mutation_strategy == "MATH":
+      X_gen = Apply_Math_Heuristic(X_gen)
+  
+  Else If mutation_strategy == "LLM":
+      Digest = Build_Episode_Digest(world.logs)
+      LLM_JSON = Query_Meta_Optimizer(Digest, X_gen)
+      X_gen.agent_counts = LLM_JSON.new_agent_counts
+      X_gen.prompts = LLM_JSON.new_prompts
+
+  Increment gen
