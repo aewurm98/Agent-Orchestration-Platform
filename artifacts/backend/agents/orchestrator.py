@@ -186,6 +186,10 @@ def topology_init(state: ArenaState) -> ArenaState:
         state["accepted_fitness"] = best_fitness_val
         state["current_fitness"] = best_fitness_val
 
+        # Snapshot generation-0 state so elitism can restore on first rejection
+        state["saved_agent_configs"] = copy.deepcopy(state["agent_configs"])
+        state["saved_topology"] = copy.deepcopy(state["topology"])
+
         best_summary = (
             f"procurement={best_cfg.get('procurement_count')}, "
             f"ops={best_cfg.get('operations_count')}, "
@@ -271,18 +275,18 @@ def _compute_confidence(state: ArenaState) -> float:
             total_orders = fulfilled + missed
             missed_ratio = missed / max(total_orders, 1)
             if missed_ratio > 0.20:
-                kappa -= 0.5   # individually forces kappa to 0.5 < 0.6
+                kappa -= 0.4   # drives kappa to 0.6; gate uses <= 0.6
 
             current_penalties = econ.pl.penalties
             prev_penalties = state.get("prev_penalty_cost", 0.0)
             if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
-                kappa -= 0.5   # individually forces kappa to 0.5 < 0.6
+                kappa -= 0.3   # drives kappa to 0.7 alone, 0.6 with missed-orders
 
     fitness_history = state.get("fitness_history", [])
     if len(fitness_history) >= 3:
         last_three = fitness_history[-3:]
         if last_three[0] > last_three[1] > last_three[2]:
-            kappa -= 0.5       # individually forces kappa to 0.5 < 0.6
+            kappa -= 0.3       # drives kappa to 0.7 alone, 0.6 with missed-orders
 
     return round(max(0.0, min(1.0, kappa)), 2)
 
@@ -340,8 +344,8 @@ def evaluate(state: ArenaState) -> ArenaState:
 
 
 def hitl_gate(state: ArenaState) -> ArenaState:
-    """Node 5: mark state for HITL pause when confidence < 0.6."""
-    state["hitl_pending"] = state.get("confidence", 1.0) < 0.6
+    """Node 5: mark state for HITL pause when confidence <= 0.6."""
+    state["hitl_pending"] = state.get("confidence", 1.0) <= 0.6
     state["traces"] = state.get("traces", []) + [{
         "role": "system",
         "content": (
@@ -372,6 +376,28 @@ def mutate(state: ArenaState) -> ArenaState:
     stagnation_counter = state.get("stagnation_counter", 0)
 
     # --- Elitism check against the best accepted fitness, not last generation ---
+    # --- Edge regrowth (5% chance per generation, regardless of accept/reject) ---
+    _rg_nodes = state.get("topology", {}).get("nodes", [])
+    if _rg_nodes and random.random() < 0.05:
+        _rg_src = random.choice(_rg_nodes)
+        _rg_tgt = random.choice(_rg_nodes)
+        if _rg_src != _rg_tgt:
+            _rg_existing = state["topology"].get("edges", [])
+            _rg_set = {(e[0], e[1]) if isinstance(e, (list, tuple)) else e for e in _rg_existing}
+            _rg_new = (_rg_src, _rg_tgt)
+            if _rg_new not in _rg_set:
+                state["topology"] = copy.deepcopy(state["topology"])
+                state["topology"]["edges"] = list(_rg_existing) + [_rg_new]
+                _rg_key = f"{_rg_src}->{_rg_tgt}"
+                if _rg_key not in state["edge_scores"]:
+                    state["edge_scores"] = dict(state["edge_scores"])
+                    state["edge_scores"][_rg_key] = 0.5
+                state["traces"] = state.get("traces", []) + [{
+                    "role": "system",
+                    "content": f"Edge regrowth: sprouted {_rg_key} at score 0.5",
+                    "timestamp": time.time(),
+                }]
+
     if current_fitness < accepted_fitness:
         # Child is strictly worse than the accepted parent — reject and RESTORE
         # parent snapshots so the next agent_step runs with the accepted configs.
@@ -403,28 +429,6 @@ def mutate(state: ArenaState) -> ArenaState:
     state["accepted_fitness"] = current_fitness
     state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
-
-    # --- Edge regrowth (5% chance) ---
-    nodes = state.get("topology", {}).get("nodes", [])
-    if nodes and random.random() < 0.05:
-        src = random.choice(nodes)
-        tgt = random.choice(nodes)
-        if src != tgt:
-            existing_edges = state["topology"].get("edges", [])
-            existing_set = {(e[0], e[1]) if isinstance(e, (list, tuple)) else e for e in existing_edges}
-            new_edge = (src, tgt)
-            if new_edge not in existing_set:
-                state["topology"] = copy.deepcopy(state["topology"])
-                state["topology"]["edges"] = list(existing_edges) + [new_edge]
-                edge_key = f"{src}->{tgt}"
-                if edge_key not in state["edge_scores"]:
-                    state["edge_scores"] = dict(state["edge_scores"])
-                    state["edge_scores"][edge_key] = 0.5
-                state["traces"] = state.get("traces", []) + [{
-                    "role": "system",
-                    "content": f"Edge regrowth: sprouted {edge_key} at score 0.5",
-                    "timestamp": time.time(),
-                }]
 
     # --- Semantic mutation (non-manufacturing configs) ---
     if state.get("scenario") == "manufacturing":
