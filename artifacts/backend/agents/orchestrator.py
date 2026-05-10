@@ -280,13 +280,13 @@ def _compute_confidence(state: ArenaState) -> float:
             current_penalties = econ.pl.penalties
             prev_penalties = state.get("prev_penalty_cost", 0.0)
             if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
-                kappa -= 0.3   # drives kappa to 0.7 alone, 0.6 with missed-orders
+                kappa -= 0.4   # individually drives kappa to 0.6, triggering HITL
 
     fitness_history = state.get("fitness_history", [])
     if len(fitness_history) >= 3:
         last_three = fitness_history[-3:]
         if last_three[0] > last_three[1] > last_three[2]:
-            kappa -= 0.3       # drives kappa to 0.7 alone, 0.6 with missed-orders
+            kappa -= 0.4       # individually drives kappa to 0.6, triggering HITL
 
     return round(max(0.0, min(1.0, kappa)), 2)
 
