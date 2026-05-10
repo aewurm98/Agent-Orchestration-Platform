@@ -32,6 +32,8 @@ class ArenaState(TypedDict):
     current_fitness: float
     parent_fitness: float
     accepted_fitness: float          # highest fitness ever accepted by elitism
+    saved_agent_configs: list[dict]  # snapshot of agent_configs at last accepted generation
+    saved_topology: dict             # snapshot of topology at last accepted generation
     topology_diff: str
     latency: float
     cost: float
@@ -262,29 +264,25 @@ def _compute_confidence(state: ArenaState) -> float:
     if state.get("scenario") == "manufacturing":
         from agents import manufacturing_roles
         env = manufacturing_roles._env_v2 or manufacturing_roles._env
-        if env is not None:
-            try:
-                econ = env.world.economy if hasattr(env, "world") else None
-                if econ is not None:
-                    fulfilled = econ._orders_fulfilled
-                    missed = econ._orders_missed
-                    total_orders = fulfilled + missed
-                    missed_ratio = missed / max(total_orders, 1)
-                    if missed_ratio > 0.20:
-                        kappa -= 0.4
+        if env is not None and hasattr(env, "world"):
+            econ = env.world.economy
+            fulfilled = econ._orders_fulfilled
+            missed = econ._orders_missed
+            total_orders = fulfilled + missed
+            missed_ratio = missed / max(total_orders, 1)
+            if missed_ratio > 0.20:
+                kappa -= 0.5   # individually forces kappa to 0.5 < 0.6
 
-                    current_penalties = econ.pl.penalties
-                    prev_penalties = state.get("prev_penalty_cost", 0.0)
-                    if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
-                        kappa -= 0.3
-            except Exception:
-                pass
+            current_penalties = econ.pl.penalties
+            prev_penalties = state.get("prev_penalty_cost", 0.0)
+            if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
+                kappa -= 0.5   # individually forces kappa to 0.5 < 0.6
 
     fitness_history = state.get("fitness_history", [])
     if len(fitness_history) >= 3:
         last_three = fitness_history[-3:]
         if last_three[0] > last_three[1] > last_three[2]:
-            kappa -= 0.3
+            kappa -= 0.5       # individually forces kappa to 0.5 < 0.6
 
     return round(max(0.0, min(1.0, kappa)), 2)
 
@@ -375,22 +373,33 @@ def mutate(state: ArenaState) -> ArenaState:
 
     # --- Elitism check against the best accepted fitness, not last generation ---
     if current_fitness < accepted_fitness:
-        # Child is strictly worse than the accepted parent — reject, do not mutate
+        # Child is strictly worse than the accepted parent — reject and RESTORE
+        # parent snapshots so the next agent_step runs with the accepted configs.
         stagnation_counter += 1
         state["stagnation_counter"] = stagnation_counter
+
+        saved_configs = state.get("saved_agent_configs")
+        saved_topo = state.get("saved_topology")
+        if saved_configs is not None:
+            state["agent_configs"] = copy.deepcopy(saved_configs)
+        if saved_topo is not None:
+            state["topology"] = copy.deepcopy(saved_topo)
+
         state["topology_diff"] = "+0/0 edges (elitism: reverted)"
         state["generation"] = state.get("generation", 0) + 1
         state["traces"] = state.get("traces", []) + [{
             "role": "system",
             "content": (
                 f"Elitism: child fitness {current_fitness:.4f} < accepted {accepted_fitness:.4f} — "
-                f"mutation rejected (stagnation={stagnation_counter})"
+                f"reverted to parent snapshot (stagnation={stagnation_counter})"
             ),
             "timestamp": time.time(),
         }]
         return state
 
-    # Accept child — update accepted_fitness and reset stagnation counter
+    # Accept child — snapshot current configs BEFORE mutation, then update bookkeeping
+    state["saved_agent_configs"] = copy.deepcopy(state.get("agent_configs", []))
+    state["saved_topology"] = copy.deepcopy(state.get("topology", {}))
     state["accepted_fitness"] = current_fitness
     state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
@@ -538,6 +547,8 @@ def _make_initial_state(scenario: str, run_id: str, max_generations: int) -> Are
         current_fitness=0.0,
         parent_fitness=0.0,
         accepted_fitness=0.0,
+        saved_agent_configs=[],
+        saved_topology={},
         topology_diff="+0/0 edges",
         latency=0.0,
         cost=0.0,
@@ -581,6 +592,8 @@ async def run_one_generation(existing_state: dict) -> dict:
     existing_state.setdefault("taguchi_baseline_log", [])
     existing_state.setdefault("accepted_fitness", existing_state.get("current_fitness", 0.0))
     existing_state.setdefault("genome_config", {})
+    existing_state.setdefault("saved_agent_configs", existing_state.get("agent_configs", []))
+    existing_state.setdefault("saved_topology", existing_state.get("topology", {}))
 
     graph = _build_step_graph()
     result = await graph.ainvoke(

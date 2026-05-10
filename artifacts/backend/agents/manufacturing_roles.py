@@ -335,7 +335,16 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
             rule = params.get("rule", "")
             value = params.get("value")
             ok, msg = apply_policy_override(rule, value)
-            skill_result = msg
+            # Post broadcast to all workers so edges from management_1 are tracked
+            for target_id in list(_env_v2.world.agents.keys()) if _env_v2 else []:
+                if target_id != agent_id:
+                    _post_to_inbox(target_id, {
+                        "type": "policy_broadcast",
+                        "from": agent_id,
+                        "rule": rule,
+                        "value": value,
+                        "timestamp": now,
+                    })
             traces.append({
                 "run_id": f"gen_{generation}",
                 "role": agent.role.value,
@@ -351,6 +360,15 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
 
         if action not in ("wait", "idle", "update_policy"):
             agent.action_buffer.insert(0, {"type": action, "params": params})
+            # Record the directed message edge for credit assignment
+            target = params.get("target_agent") or params.get("agent_id")
+            if target and target in (env.world.agents if env else {}):
+                _post_to_inbox(target, {
+                    "type": action,
+                    "from": agent_id,
+                    "params": params,
+                    "timestamp": now,
+                })
 
         traces.append({
             "run_id": f"gen_{generation}",

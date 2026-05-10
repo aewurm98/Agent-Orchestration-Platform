@@ -188,9 +188,38 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         from agents import manufacturing_roles
         from agents.manufacturing_roles import run_manufacturing_v2_step
 
-        env = ManufacturingEnvV2(FIRST_FACTORY_CONFIG)
+        # --- Taguchi L9 init: evaluate 9 env configs, start from the best winner ---
+        from agents.evolutionary_engine import TaguchiL9Sample
+        from agents.orchestrator import _run_taguchi_evaluation
+        from agents.manufacturing_roles import init_edge_scores
+
+        _taguchi_param_grid = {
+            "procurement_count": [1, 2, 3],
+            "operations_count":  [1, 3, 5],
+            "order_arrival_rate": [8.0, 12.0, 18.0],
+        }
+        _taguchi_configs = TaguchiL9Sample(_taguchi_param_grid)
+        _best_cfg, _best_genome, _best_env, _baseline_log = _run_taguchi_evaluation(
+            _taguchi_configs, ticks=50
+        )
+
+        env = _best_env if _best_env is not None else ManufacturingEnvV2(FIRST_FACTORY_CONFIG)
         mfg_set_env(env)
         manufacturing_roles.set_active_env_v2(env)
+
+        # Seed edge scores from the winning topology
+        _initial_edges = {
+            f"{src}->{tgt}": 0.5
+            for src, tgt in (
+                [("management_1", aid) for aid in env.world.agents if aid != "management_1"]
+                + [(aid, "management_1") for aid in env.world.agents if aid != "management_1"]
+            )
+        }
+        init_edge_scores(_initial_edges)
+
+        _best_fitness_at_init = next(
+            (e["fitness"] for e in _baseline_log if e["config"] == _best_cfg), 0.0
+        )
 
         # Policy selection: read from run config (random / scripted / llm)
         policy_name = active_run.get("policy", "scripted")
@@ -217,6 +246,26 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             },
             "current_fitness": 0.0,
             "parent_fitness": 0.0,
+            "accepted_fitness": _best_fitness_at_init,
+            "saved_agent_configs": [
+                {"agent_id": aid, "role": a.role.value}
+                for aid, a in env.world.agents.items()
+            ],
+            "saved_topology": {
+                "nodes": list(env.world.agents.keys()),
+                "edges": [
+                    ("management_1", aid)
+                    for aid in env.world.agents.keys() if aid != "management_1"
+                ] + [
+                    (aid, "management_1")
+                    for aid in env.world.agents.keys() if aid != "management_1"
+                ],
+            },
+            "genome_config": _best_cfg or {},
+            "taguchi_baseline_log": _baseline_log,
+            "stagnation_counter": 0,
+            "fitness_history": [],
+            "prev_penalty_cost": 0.0,
             "topology_diff": "+0/0 edges",
             "latency": 0.0,
             "cost": 0.0,
@@ -224,7 +273,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "max_generations": 999,
             "hitl_pending": False,
             "confidence": 1.0,
-            "edge_scores": {},
+            "edge_scores": _initial_edges,
             "checkpoint_key": "",
             "run_id": run_id,
             "traces": [],
