@@ -492,10 +492,101 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         run_id=run_id,
         max_generations=1,
     )
+    # Inject live run config so boundary_mode / mutation_strategy / inter_ticks
+    # are honoured for non-manufacturing scenarios exactly as for manufacturing.
+    orch_state["boundary_mode"] = active_run.get("boundary_mode", "INTRA")
+    orch_state["mutation_strategy"] = active_run.get("mutation_strategy", "MATH")
+    orch_state["inter_ticks"] = active_run.get("inter_ticks", 100)
+    orch_state["inter_episode_done"] = False
+    orch_state["scenario"] = scenario
 
     game_tick_counter = 0
     trace_cursor = 0
 
+    sc_boundary_mode = active_run.get("boundary_mode", "INTRA")
+    print(
+        f"[sim_loop/{scenario}] boundary_mode={sc_boundary_mode}, "
+        f"mutation_strategy={orch_state['mutation_strategy']}, "
+        f"inter_ticks={orch_state['inter_ticks']}"
+    )
+
+    if sc_boundary_mode == "INTER":
+        # ── INTER: episodic simulation for non-manufacturing scenarios ────────
+        while active_run.get("running"):
+            if active_run.get("paused"):
+                await asyncio.sleep(0.1)
+                continue
+
+            speed_mult = float(active_run.get("speed_multiplier", 1.0))
+            T_max = int(active_run.get("inter_ticks", 100))
+            _tick_delay = max(0.01, 0.5 / max(speed_mult, 0.1)) / 10
+
+            # Tick one complete episode with per-tick emissions
+            for _ti in range(T_max):
+                if not active_run.get("running"):
+                    break
+                _gs = env.step(env.random_action())
+                if _ti % 5 == 0:
+                    await sio.emit("game_state_update", _gs.to_json())
+                    await sio.emit("tick_update", _gs.to_json())
+                    await asyncio.sleep(_tick_delay)
+
+            if not active_run.get("running"):
+                break
+
+            # Run evolutionary step: evaluate → hitl_gate → mutate
+            orch_state["inter_episode_done"] = True
+            orch_state = await run_one_generation(orch_state)
+            orch_state["inter_episode_done"] = False
+
+            # Reset env for next episode
+            env = env_cls()
+
+            generation = orch_state.get("generation", 0)
+            current_fitness = orch_state.get("current_fitness", 0.0)
+            parent_fitness = orch_state.get("parent_fitness", 0.0)
+            accepted_fitness_sc = orch_state.get("accepted_fitness", current_fitness)
+
+            await sio.emit("fitness_update", {
+                "generation": generation,
+                "parent_fitness": round(parent_fitness, 4),
+                "best_fitness": round(accepted_fitness_sc, 4),
+                "mutation_type": active_run.get("mutation_strategy", "MATH").lower(),
+                "topology_diff": orch_state.get("topology_diff", "+0/0 edges"),
+                "cost_per_task": round(orch_state.get("cost", 0.0), 5),
+                "latency": round(orch_state.get("latency", 0.0), 3),
+            })
+
+            dag_payload = _build_dag_update(orch_state, scenario)
+            await sio.emit("dag_update", dag_payload)
+
+            new_traces = orch_state.get("traces", [])[trace_cursor:]
+            trace_cursor = len(orch_state.get("traces", []))
+            for trace in new_traces:
+                t_payload = {
+                    "run_id": run_id,
+                    "role": trace.get("role", "system"),
+                    "content": trace.get("content", ""),
+                    "timestamp": trace.get("timestamp", time.time()),
+                }
+                await sio.emit("agent_thought", t_payload)
+
+            if mode == "hitl" and orch_state.get("hitl_pending"):
+                await sio.emit("hitl_request", {
+                    "run_id": run_id,
+                    "generation": generation,
+                    "plan": (
+                        f"INTER episode {generation} complete — "
+                        f"fitness={round(current_fitness, 4)}"
+                    ),
+                    "confidence": round(orch_state.get("confidence", 0.5), 2),
+                    "proposed_action": "Apply genome mutation and start new episode",
+                })
+
+            await asyncio.sleep(0.1)
+        return
+
+    # ── INTRA mode: continuous ticking ───────────────────────────────────────
     while active_run.get("running"):
         game_state = env.step(env.random_action())
         await sio.emit("game_state_update", game_state.to_json())
