@@ -120,7 +120,13 @@ def _run_taguchi_evaluation(configs: list[dict], ticks: int = 50):
             best_fitness = fitness
             best_config = cfg
             best_genome = genome
-            best_env = env
+
+    # Instantiate a FRESH env from the winning genome config — the stepped evaluation
+    # envs are discarded; generation-0 always starts from tick 0 with the best config.
+    if best_genome is not None:
+        best_env = ManufacturingEnvV2(best_genome.to_env_config())
+    else:
+        best_env = None
 
     return best_config, best_genome, best_env, baseline_log
 
@@ -280,13 +286,13 @@ def _compute_confidence(state: ArenaState) -> float:
             current_penalties = econ.pl.penalties
             prev_penalties = state.get("prev_penalty_cost", 0.0)
             if prev_penalties > 0 and current_penalties > prev_penalties * 1.5:
-                kappa -= 0.4   # individually drives kappa to 0.6, triggering HITL
+                kappa -= 0.3   # spec constant; combined with missed-orders drives kappa to 0.3
 
     fitness_history = state.get("fitness_history", [])
     if len(fitness_history) >= 3:
         last_three = fitness_history[-3:]
         if last_three[0] > last_three[1] > last_three[2]:
-            kappa -= 0.4       # individually drives kappa to 0.6, triggering HITL
+            kappa -= 0.3       # spec constant; combined with missed-orders drives kappa to 0.3
 
     return round(max(0.0, min(1.0, kappa)), 2)
 
@@ -372,10 +378,10 @@ def mutate(state: ArenaState) -> ArenaState:
     added at score 0.5, giving pruned topologies a path back to connectivity.
     """
     current_fitness = state.get("current_fitness", 0.0)
+    parent_fitness = state.get("parent_fitness", 0.0)
     accepted_fitness = state.get("accepted_fitness", 0.0)
     stagnation_counter = state.get("stagnation_counter", 0)
 
-    # --- Elitism check against the best accepted fitness, not last generation ---
     # --- Edge regrowth (5% chance per generation, regardless of accept/reject) ---
     _rg_nodes = state.get("topology", {}).get("nodes", [])
     if _rg_nodes and random.random() < 0.05:
@@ -398,9 +404,9 @@ def mutate(state: ArenaState) -> ArenaState:
                     "timestamp": time.time(),
                 }]
 
-    if current_fitness < accepted_fitness:
-        # Child is strictly worse than the accepted parent — reject and RESTORE
-        # parent snapshots so the next agent_step runs with the accepted configs.
+    # (1+1)-EA: child accepted only when it improves upon the IMMEDIATE parent
+    if current_fitness < parent_fitness:
+        # Child is worse than the immediate parent — reject and RESTORE parent snapshot
         stagnation_counter += 1
         state["stagnation_counter"] = stagnation_counter
 
@@ -416,17 +422,18 @@ def mutate(state: ArenaState) -> ArenaState:
         state["traces"] = state.get("traces", []) + [{
             "role": "system",
             "content": (
-                f"Elitism: child fitness {current_fitness:.4f} < accepted {accepted_fitness:.4f} — "
+                f"Elitism: child fitness {current_fitness:.4f} < parent {parent_fitness:.4f} — "
                 f"reverted to parent snapshot (stagnation={stagnation_counter})"
             ),
             "timestamp": time.time(),
         }]
         return state
 
-    # Accept child — snapshot current configs BEFORE mutation, then update bookkeeping
+    # Accept child — snapshot current configs BEFORE mutation, then update bookkeeping.
+    # Also track all-time best in accepted_fitness for stagnation analytics.
     state["saved_agent_configs"] = copy.deepcopy(state.get("agent_configs", []))
     state["saved_topology"] = copy.deepcopy(state.get("topology", {}))
-    state["accepted_fitness"] = current_fitness
+    state["accepted_fitness"] = max(current_fitness, accepted_fitness)
     state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
 
