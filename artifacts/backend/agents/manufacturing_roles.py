@@ -84,12 +84,12 @@ def set_active_env_v2(env: "ManufacturingEnvV2") -> None:
     _pending_message_log.clear()
 
 
-def _current_economy_snapshot() -> tuple[float, int]:
-    """Return (current_profit, shipped_count) from the active v2 env, or (0,0)."""
+def _current_economy_snapshot() -> tuple[float, int, float]:
+    """Return (current_profit, shipped_count, cumulative_penalties) from the active v2 env."""
     if _env_v2 is not None:
         econ = _env_v2.world.economy
-        return econ.pl.profit, econ._finished_items_shipped
-    return 0.0, 0
+        return econ.pl.profit, econ._finished_items_shipped, econ.pl.penalties
+    return 0.0, 0, 0.0
 
 
 def _post_to_inbox(agent_id: str, message: dict) -> None:
@@ -100,8 +100,9 @@ def _post_to_inbox(agent_id: str, message: dict) -> None:
     if sender and _env_v2 is not None:
         edge_key = f"{sender}->{agent_id}"
         tick = _env_v2.world.tick
-        profit, shipped = _current_economy_snapshot()
-        _pending_message_log.setdefault(edge_key, []).append((tick, profit, shipped))
+        profit, shipped, penalties = _current_economy_snapshot()
+        # Tuple: (sent_tick, profit_at_send, shipped_at_send, penalty_at_send)
+        _pending_message_log.setdefault(edge_key, []).append((tick, profit, shipped, penalties))
 
 
 def _read_inbox(agent_id: str) -> list[dict]:
@@ -114,35 +115,46 @@ def sweep_edge_scores(tick: int) -> None:
     """
     Credit assignment sweep — called every 5 ticks.
 
-    For each pending message log entry: if profit or shipped items increased in
-    the 5 ticks since the message was sent, bump A_{u→v} by 0.05 (cap 1.0).
-    If a penalty was recorded (profit fell), drop it by 0.05 (floor 0.0).
-    Clears entries older than 5 ticks.
+    For each pending message log entry (sent_tick, profit_at_send, shipped_at_send,
+    penalty_at_send): compare current economy state to the snapshot at send time.
+
+    - If profit grew OR shipped items increased since the message was sent:
+      bump A_{u→v} by 0.05 (capped at 1.0) — message preceded a good outcome.
+    - If cumulative penalties increased since the message was sent:
+      drop A_{u→v} by 0.05 (floored at 0.0) — message was active during a penalty.
+
+    Entries older than 5 ticks are consumed (regardless of outcome) and removed.
     """
     if _env_v2 is None:
         return
 
-    current_profit, current_shipped = _current_economy_snapshot()
-    current_penalties = _env_v2.world.economy.pl.penalties
-
+    current_profit, current_shipped, current_penalties = _current_economy_snapshot()
     stale_threshold = 5
 
     for edge_key in list(_pending_message_log.keys()):
         remaining = []
-        for (sent_tick, profit_at_send, shipped_at_send) in _pending_message_log[edge_key]:
+        for entry in _pending_message_log[edge_key]:
+            # Support both 3-tuple (legacy) and 4-tuple (with penalty)
+            if len(entry) == 4:
+                sent_tick, profit_at_send, shipped_at_send, penalty_at_send = entry
+            else:
+                sent_tick, profit_at_send, shipped_at_send = entry
+                penalty_at_send = 0.0
+
             age = tick - sent_tick
             if age < stale_threshold:
-                remaining.append((sent_tick, profit_at_send, shipped_at_send))
+                remaining.append(entry)
                 continue
-            # Evaluate outcome
+
+            # Evaluate outcome over the 5-tick window
             profit_grew = current_profit > profit_at_send
             shipped_grew = current_shipped > shipped_at_send
-            profit_fell = current_profit < profit_at_send
+            penalty_increased = current_penalties > penalty_at_send
 
             current_score = _edge_scores.get(edge_key, 0.5)
             if profit_grew or shipped_grew:
                 new_score = min(1.0, current_score + 0.05)
-            elif profit_fell:
+            elif penalty_increased:
                 new_score = max(0.0, current_score - 0.05)
             else:
                 new_score = current_score
