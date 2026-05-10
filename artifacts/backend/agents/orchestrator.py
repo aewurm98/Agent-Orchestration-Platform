@@ -241,9 +241,11 @@ def topology_init(state: ArenaState) -> ArenaState:
 async def agent_step(state: ArenaState) -> ArenaState:
     """Run one tick of the active agent population."""
     if state.get("scenario") == "manufacturing":
-        from agents.manufacturing_roles import run_manufacturing_step
+        from agents.manufacturing_roles import run_manufacturing_v2_step
+        from agents import manufacturing_roles
         generation = state.get("generation", 0)
-        new_traces = await run_manufacturing_step(generation)
+        env = manufacturing_roles._env_v2 or manufacturing_roles._env
+        new_traces = await run_manufacturing_v2_step(generation, env) if env else []
         state["traces"] = state.get("traces", []) + new_traces
     else:
         # Stub for other scenarios — future LLM integration
@@ -319,11 +321,21 @@ def evaluate(state: ArenaState) -> ArenaState:
             merged.update(updated_edge_scores)
             state["edge_scores"] = merged
 
-    fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
     state["parent_fitness"] = state.get("current_fitness", 0.0)
-    state["current_fitness"] = round(fitness, 4)
-    state["latency"] = round(latency, 3)
-    state["cost"] = round(cost, 5)
+
+    if state.get("scenario") == "manufacturing":
+        # For manufacturing: use real env fitness directly — no synthetic latency/cost noise
+        from agents import manufacturing_roles as _mr
+        _env = _mr._env_v2 or _mr._env
+        real_fitness = _env.get_fitness() if _env is not None else success_rate
+        state["current_fitness"] = round(real_fitness, 4)
+        state["latency"] = round(latency, 3)
+        state["cost"] = round(cost, 5)
+    else:
+        fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
+        state["current_fitness"] = round(fitness, 4)
+        state["latency"] = round(latency, 3)
+        state["cost"] = round(cost, 5)
 
     fitness_history = list(state.get("fitness_history", []))
     fitness_history.append(state["current_fitness"])
@@ -417,6 +429,8 @@ def mutate(state: ArenaState) -> ArenaState:
         if saved_topo is not None:
             state["topology"] = copy.deepcopy(saved_topo)
 
+        # Restore fitness state so rejected child does not become next parent baseline
+        state["current_fitness"] = parent_fitness
         state["topology_diff"] = "+0/0 edges (elitism: reverted)"
         state["generation"] = state.get("generation", 0) + 1
         state["traces"] = state.get("traces", []) + [{
