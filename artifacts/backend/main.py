@@ -335,23 +335,25 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 dag_payload = _build_dag_update(orch_state, scenario)
                 await sio.emit("dag_update", dag_payload)
 
-                # Only run LLM step in llm policy mode; random/scripted
-                # must not have their action_buffers contaminated by LLM calls.
-                llm_traces: list[dict] = []
-                if active_run.get("policy", "scripted") == "llm":
-                    llm_traces = await run_manufacturing_v2_step(generation, env)
-                for trace in llm_traces:
-                    payload = {
-                        "run_id": run_id,
-                        "role": trace.get("role", "system"),
-                        "content": trace.get("content", ""),
-                        "timestamp": trace.get("timestamp", time.time()),
-                    }
-                    for field_name in ("agent_name", "agent_role", "action", "parameters", "reasoning"):
-                        if field_name in trace:
-                            payload[field_name] = trace[field_name]
-                    await sio.emit("agent_thought", payload)
-                    await asyncio.sleep(0.05)
+                # LLM reasoning is handled by orchestrator agent_step (via run_one_generation)
+                # when policy_mode == "llm". Emit any agent_thought traces it produced.
+                new_traces = orch_state.get("traces", [])[trace_cursor:]
+                trace_cursor = len(orch_state.get("traces", []))
+                for trace in new_traces:
+                    if trace.get("role") in ("management", "procurement", "operations",
+                                              "engineering", "sales"):
+                        payload = {
+                            "run_id": run_id,
+                            "role": trace.get("role", "system"),
+                            "content": trace.get("content", ""),
+                            "timestamp": trace.get("timestamp", time.time()),
+                        }
+                        for field_name in ("agent_name", "agent_role", "action",
+                                           "parameters", "reasoning"):
+                            if field_name in trace:
+                                payload[field_name] = trace[field_name]
+                        await sio.emit("agent_thought", payload)
+                        await asyncio.sleep(0.05)
 
             if env.done:
                 await sio.emit("game_over", {

@@ -312,12 +312,19 @@ def evaluate(state: ArenaState) -> ArenaState:
 
     if state.get("scenario") == "manufacturing":
         from agents import manufacturing_roles
+        from agents.manufacturing_roles import sweep_edge_scores
         env = manufacturing_roles._env_v2 or manufacturing_roles._env
         if env is not None:
             if hasattr(env, "get_objective_value"):
                 success_rate = env.get_objective_value()
             else:
                 success_rate = env.get_fitness()
+
+            # Sweep edge credit scores every 5 ticks — policy-agnostic so it
+            # always runs regardless of scripted / random / llm mode.
+            tick = env.world.tick if hasattr(env, "world") else 0
+            if tick > 0 and tick % 5 == 0:
+                sweep_edge_scores(tick)
 
         # Pull updated edge scores from the credit assignment module
         updated_edge_scores = dict(manufacturing_roles._edge_scores)
@@ -381,6 +388,37 @@ def hitl_gate(state: ArenaState) -> ArenaState:
     return state
 
 
+def _apply_edge_regrowth(state: ArenaState) -> None:
+    """
+    With 5% probability, add a random directed edge at score 0.5 to the topology.
+    Mutates state in-place. Called after each elitism decision (both accept and reject)
+    so regrowth applies every generation and persists regardless of accept/reject outcome.
+    """
+    nodes = state.get("topology", {}).get("nodes", [])
+    if not nodes or random.random() >= 0.05:
+        return
+    src = random.choice(nodes)
+    tgt = random.choice(nodes)
+    if src == tgt:
+        return
+    existing = state["topology"].get("edges", [])
+    existing_set = {(e[0], e[1]) if isinstance(e, (list, tuple)) else e for e in existing}
+    new_edge = (src, tgt)
+    if new_edge in existing_set:
+        return
+    state["topology"] = copy.deepcopy(state["topology"])
+    state["topology"]["edges"] = list(existing) + [new_edge]
+    edge_key = f"{src}->{tgt}"
+    if edge_key not in state.get("edge_scores", {}):
+        state["edge_scores"] = dict(state.get("edge_scores", {}))
+        state["edge_scores"][edge_key] = 0.5
+    state["traces"] = state.get("traces", []) + [{
+        "role": "system",
+        "content": f"Edge regrowth: sprouted {edge_key} at score 0.5",
+        "timestamp": time.time(),
+    }]
+
+
 def mutate(state: ArenaState) -> ArenaState:
     """Apply semantic mutation + Graph-GRPO edge pruning with elitism and edge regrowth.
 
@@ -399,28 +437,6 @@ def mutate(state: ArenaState) -> ArenaState:
     accepted_fitness = state.get("accepted_fitness", 0.0)
     stagnation_counter = state.get("stagnation_counter", 0)
 
-    # --- Edge regrowth (5% chance per generation, regardless of accept/reject) ---
-    _rg_nodes = state.get("topology", {}).get("nodes", [])
-    if _rg_nodes and random.random() < 0.05:
-        _rg_src = random.choice(_rg_nodes)
-        _rg_tgt = random.choice(_rg_nodes)
-        if _rg_src != _rg_tgt:
-            _rg_existing = state["topology"].get("edges", [])
-            _rg_set = {(e[0], e[1]) if isinstance(e, (list, tuple)) else e for e in _rg_existing}
-            _rg_new = (_rg_src, _rg_tgt)
-            if _rg_new not in _rg_set:
-                state["topology"] = copy.deepcopy(state["topology"])
-                state["topology"]["edges"] = list(_rg_existing) + [_rg_new]
-                _rg_key = f"{_rg_src}->{_rg_tgt}"
-                if _rg_key not in state["edge_scores"]:
-                    state["edge_scores"] = dict(state["edge_scores"])
-                    state["edge_scores"][_rg_key] = 0.5
-                state["traces"] = state.get("traces", []) + [{
-                    "role": "system",
-                    "content": f"Edge regrowth: sprouted {_rg_key} at score 0.5",
-                    "timestamp": time.time(),
-                }]
-
     # (1+1)-EA: child accepted only when it improves upon the IMMEDIATE parent
     if current_fitness < parent_fitness:
         # Child is worse than the immediate parent — reject and RESTORE parent snapshot
@@ -436,6 +452,11 @@ def mutate(state: ArenaState) -> ArenaState:
 
         # Restore fitness state so rejected child does not become next parent baseline
         state["current_fitness"] = parent_fitness
+
+        # Edge regrowth on rejection: apply to the restored topology so the 5% chance
+        # is truly per-generation and the sprouted edge persists in the restored parent.
+        _apply_edge_regrowth(state)
+
         state["topology_diff"] = "+0/0 edges (elitism: reverted)"
         state["generation"] = state.get("generation", 0) + 1
         state["traces"] = state.get("traces", []) + [{
@@ -452,6 +473,10 @@ def mutate(state: ArenaState) -> ArenaState:
     # Also track all-time best in accepted_fitness for stagnation analytics.
     state["saved_agent_configs"] = copy.deepcopy(state.get("agent_configs", []))
     state["saved_topology"] = copy.deepcopy(state.get("topology", {}))
+
+    # Edge regrowth on acceptance: applied after snapshot so the restored snapshot is
+    # clean, but the live topology may grow a new edge before pruning.
+    _apply_edge_regrowth(state)
     state["accepted_fitness"] = max(current_fitness, accepted_fitness)
     state["stagnation_counter"] = 0
     before_edge_count = len(state.get("topology", {}).get("edges", []))
