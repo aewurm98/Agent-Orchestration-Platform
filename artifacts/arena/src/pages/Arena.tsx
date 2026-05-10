@@ -15,7 +15,7 @@ import WorkflowLibrary from "@/components/WorkflowLibrary";
 import HITLModal from "@/components/HITLModal";
 
 export default function Arena() {
-  const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, setIsRunning } = useSocket();
+  const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, clearSessionState } = useSocket();
   const [scenario, setScenario] = useState("Supply Chain");
   const [isHitl, setIsHitl] = useState(false);
 
@@ -35,7 +35,7 @@ export default function Arena() {
   const handleStop = async () => {
     try {
       await fetch("/api/scenario/stop", { method: "POST" });
-      setIsRunning(false);
+      clearSessionState();
     } catch (e) {
       console.error(e);
     }
