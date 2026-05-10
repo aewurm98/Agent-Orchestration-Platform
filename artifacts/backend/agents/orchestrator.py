@@ -54,6 +54,7 @@ class ArenaState(TypedDict):
     boundary_mode: str               # "INTRA" continuous | "INTER" episodic per-generation reset
     mutation_strategy: str           # "MATH" heuristic perturbation | "LLM" meta-optimizer
     inter_ticks: int                 # episode length (ticks) used in INTER mode
+    inter_episode_done: bool         # True when main.py has already run the episode; agent_step skips it
 
 
 # ---------------------------------------------------------------------------
@@ -258,39 +259,54 @@ async def agent_step(state: ArenaState) -> ArenaState:
         generation = state.get("generation", 0)
 
         if boundary_mode == "INTER":
-            # ── INTER: reset env with genome and run a complete episode ──────
-            from evolution.manufacturing_genome import ManufacturingGenome
-            from game_envs.manufacturing_v2.env import ManufacturingEnvV2
-            from agents.manufacturing_policies import ScriptedGreedyPolicy
-
-            genome_cfg = state.get("genome_config", {})
-            if genome_cfg and "agent_counts" in genome_cfg:
-                genome = ManufacturingGenome.from_dict(genome_cfg)
+            if state.get("inter_episode_done", False):
+                # ── Episode already run by main.py; just record a trace ──────
+                _done_env = manufacturing_roles._env_v2
+                _ticks_done = _done_env.world.tick if (_done_env and hasattr(_done_env, "world")) else 0
+                _fit_done = _done_env.get_fitness() if _done_env else 0.0
+                state["traces"] = state.get("traces", []) + [{
+                    "role": "system",
+                    "content": (
+                        f"[Gen {generation}] INTER episode: "
+                        f"{_ticks_done} ticks, "
+                        f"fitness={round(_fit_done, 4)}"
+                    ),
+                    "timestamp": time.time(),
+                }]
             else:
-                genome = ManufacturingGenome.default()
+                # ── Fallback: run episode inline (backward compat) ────────────
+                from evolution.manufacturing_genome import ManufacturingGenome
+                from game_envs.manufacturing_v2.env import ManufacturingEnvV2
+                from agents.manufacturing_policies import ScriptedGreedyPolicy
 
-            new_env = ManufacturingEnvV2(genome.to_env_config())
-            manufacturing_roles.set_active_env_v2(new_env)
+                genome_cfg = state.get("genome_config", {})
+                if genome_cfg and "agent_counts" in genome_cfg:
+                    genome = ManufacturingGenome.from_dict(genome_cfg)
+                else:
+                    genome = ManufacturingGenome.default()
 
-            T_max = state.get("inter_ticks", 100)
-            policy = ScriptedGreedyPolicy()
-            ticks_run = 0
-            for _ in range(T_max):
-                if new_env.done:
-                    break
-                actions = policy.get_all_actions(new_env.world)
-                new_env.world.tick_advance(actions)
-                ticks_run += 1
+                new_env = ManufacturingEnvV2(genome.to_env_config())
+                manufacturing_roles.set_active_env_v2(new_env)
 
-            state["traces"] = state.get("traces", []) + [{
-                "role": "system",
-                "content": (
-                    f"[Gen {generation}] INTER episode: "
-                    f"{ticks_run}/{T_max} ticks, "
-                    f"fitness={round(new_env.get_fitness(), 4)}"
-                ),
-                "timestamp": time.time(),
-            }]
+                T_max = state.get("inter_ticks", 100)
+                policy = ScriptedGreedyPolicy()
+                ticks_run = 0
+                for _ in range(T_max):
+                    if new_env.done:
+                        break
+                    actions = policy.get_all_actions(new_env.world)
+                    new_env.world.tick_advance(actions)
+                    ticks_run += 1
+
+                state["traces"] = state.get("traces", []) + [{
+                    "role": "system",
+                    "content": (
+                        f"[Gen {generation}] INTER episode (inline): "
+                        f"{ticks_run}/{T_max} ticks, "
+                        f"fitness={round(new_env.get_fitness(), 4)}"
+                    ),
+                    "timestamp": time.time(),
+                }]
 
         else:
             # ── INTRA: single LLM step when policy demands it ────────────────
@@ -544,6 +560,10 @@ async def mutate(state: ArenaState) -> ArenaState:
 
     if mutation_strategy == "LLM":
         # ── LLM meta-optimizer path ───────────────────────────────────────────
+        print(
+            f"[LLM] Calling meta-optimizer — gen={state.get('generation', 0)}, "
+            f"scenario={scenario}, boundary={state.get('boundary_mode', 'INTRA')}"
+        )
         try:
             from agents.meta_optimizer import query_meta_optimizer, apply_genome_delta
             from agents import manufacturing_roles as _mr
@@ -553,6 +573,7 @@ async def mutate(state: ArenaState) -> ArenaState:
                 state.get("genome_config", {}), delta, scenario
             )
             reasoning = state.get("genome_config", {}).get("_llm_reasoning", "")
+            print(f"[LLM] Meta-optimizer succeeded — reasoning: {reasoning[:120] if reasoning else '(none)'}")
             if reasoning:
                 state["traces"] = state.get("traces", []) + [{
                     "role": "system",
@@ -560,11 +581,7 @@ async def mutate(state: ArenaState) -> ArenaState:
                     "timestamp": time.time(),
                 }]
         except Exception as _llm_exc:
-            # Fall back to MATH on any LLM error so the loop is never blocked
-            import logging as _log
-            _log.getLogger(__name__).warning(
-                "LLM mutation failed (%s) — falling back to MATH", _llm_exc
-            )
+            print(f"[LLM] Meta-optimizer FAILED ({_llm_exc!r}) — falling back to MATH")
             mutation_strategy = "MATH"
             mutation_label = "LLM→MATH(fallback)"
 
@@ -772,6 +789,7 @@ async def run_one_generation(existing_state: dict) -> dict:
     existing_state.setdefault("boundary_mode", "INTRA")
     existing_state.setdefault("mutation_strategy", "MATH")
     existing_state.setdefault("inter_ticks", 100)
+    existing_state.setdefault("inter_episode_done", False)
 
     graph = _build_step_graph()
     result = await graph.ainvoke(

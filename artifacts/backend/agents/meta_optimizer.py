@@ -221,8 +221,9 @@ async def query_meta_optimizer(state: dict, env: Any) -> dict:
         system_prompt = _build_system_prompt(scenario)
         user_prompt = _build_user_prompt(state, env, digest)
 
+        print(f"[LLM meta_optimizer] querying model for scenario={scenario}")
         response = await client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-4o-mini",
             max_completion_tokens=512,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -230,6 +231,7 @@ async def query_meta_optimizer(state: dict, env: Any) -> dict:
             ],
         )
         raw = (response.choices[0].message.content or "").strip()
+        print(f"[LLM meta_optimizer] raw response length={len(raw)}")
 
         # Strip markdown fences if model added them anyway
         if raw.startswith("```"):

@@ -19,6 +19,7 @@ export default function Arena() {
   const [scenario, setScenario] = useState("Supply Chain");
   const [boundaryMode, setBoundaryMode] = useState<"INTRA" | "INTER">("INTRA");
   const [mutationStrategy, setMutationStrategy] = useState<"MATH" | "LLM">("MATH");
+  const [interTicks, setInterTicks] = useState(100);
   const [isHitl, setIsHitl] = useState(false);
 
   const handleStart = async () => {
@@ -31,6 +32,7 @@ export default function Arena() {
           mode: isHitl ? "hitl" : "autonomous",
           boundary_mode: boundaryMode,
           mutation_strategy: mutationStrategy,
+          inter_ticks: interTicks,
         }),
       });
       emitStartEvolution();
@@ -85,7 +87,11 @@ export default function Arena() {
           {/* Boundary mode selector */}
           <Select
             value={boundaryMode}
-            onValueChange={(v) => setBoundaryMode(v as "INTRA" | "INTER")}
+            onValueChange={(v) => {
+              const bm = v as "INTRA" | "INTER";
+              setBoundaryMode(bm);
+              if (bm === "INTRA") setMutationStrategy("MATH");
+            }}
             disabled={isRunning}
           >
             <SelectTrigger
@@ -104,7 +110,7 @@ export default function Arena() {
             </SelectContent>
           </Select>
 
-          {/* Mutation strategy selector */}
+          {/* Mutation strategy selector — LLM only available in INTER mode */}
           <Select
             value={mutationStrategy}
             onValueChange={(v) => setMutationStrategy(v as "MATH" | "LLM")}
@@ -120,11 +126,28 @@ export default function Arena() {
               <SelectItem value="MATH">
                 <span className="font-mono">MATH</span>
               </SelectItem>
-              <SelectItem value="LLM">
+              <SelectItem value="LLM" disabled={boundaryMode === "INTRA"}>
                 <span className="font-mono">LLM</span>
               </SelectItem>
             </SelectContent>
           </Select>
+
+          {/* Episode length — only visible in INTER mode */}
+          {boundaryMode === "INTER" && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-[#8b949e] font-mono uppercase tracking-wider">T=</span>
+              <input
+                type="number"
+                min={10}
+                max={500}
+                step={10}
+                value={interTicks}
+                onChange={(e) => setInterTicks(Math.max(10, Math.min(500, Number(e.target.value))))}
+                disabled={isRunning}
+                className="w-[60px] h-8 text-xs bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded px-2 font-mono focus:outline-none focus:border-[#00d9ff] disabled:opacity-40"
+              />
+            </div>
+          )}
 
           {/* Distinct Start button */}
           <Button
