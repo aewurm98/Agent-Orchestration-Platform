@@ -6,6 +6,12 @@ Planners/Management agents have broader context.
 
 Module-level singletons hold env reference, message board, and planner query cache.
 Call set_active_env(env) for legacy mode, set_active_env_v2(env) for grid mode.
+
+Edge credit assignment:
+  _pending_message_log maps edge_key → list of
+  (sent_tick, profit_at_send, shipped_at_send, penalty_at_send) 4-tuples.
+  sweep_edge_scores(tick) is called every 5 ticks (via orchestrator evaluate) to
+  bump/drop _edge_scores based on outcome since the message was sent.
 """
 from __future__ import annotations
 
@@ -52,6 +58,14 @@ _message_board: dict[str, list[dict]] = {}
 _planner_cache: dict[str, dict] = {}
 _worker_state_cache: dict[str, dict] = {}
 
+# Edge credit assignment state
+# Maps edge_key (e.g. "planner_1->worker_raw_materials") to list of
+# (sent_tick, profit_at_send, shipped_at_send) tuples.
+_pending_message_log: dict[str, list[tuple[int, float, int]]] = {}
+
+# Module-level edge scores — updated by sweep_edge_scores(), read by orchestrator
+_edge_scores: dict[str, float] = {}
+
 
 def set_active_env(env) -> None:
     global _env, _openai_client
@@ -69,16 +83,92 @@ def set_active_env_v2(env: "ManufacturingEnvV2") -> None:
     _message_board.clear()
     _planner_cache.clear()
     _worker_state_cache.clear()
+    _pending_message_log.clear()
+
+
+def _current_economy_snapshot() -> tuple[float, int, float]:
+    """Return (current_profit, shipped_count, cumulative_penalties) from the active v2 env."""
+    if _env_v2 is not None:
+        econ = _env_v2.world.economy
+        return econ.pl.profit, econ._finished_items_shipped, econ.pl.penalties
+    return 0.0, 0, 0.0
 
 
 def _post_to_inbox(agent_id: str, message: dict) -> None:
+    """Post a message to an agent's inbox and record it in the edge credit log."""
     _message_board.setdefault(agent_id, []).append(message)
+
+    sender = message.get("from")
+    if sender and _env_v2 is not None:
+        edge_key = f"{sender}->{agent_id}"
+        tick = _env_v2.world.tick
+        profit, shipped, penalties = _current_economy_snapshot()
+        # Tuple: (sent_tick, profit_at_send, shipped_at_send, penalty_at_send)
+        _pending_message_log.setdefault(edge_key, []).append((tick, profit, shipped, penalties))
 
 
 def _read_inbox(agent_id: str) -> list[dict]:
     msgs = _message_board.get(agent_id, [])
     _message_board[agent_id] = []
     return msgs
+
+
+def sweep_edge_scores(tick: int) -> None:
+    """
+    Credit assignment sweep — called every 5 ticks.
+
+    For each pending message log entry (sent_tick, profit_at_send, shipped_at_send,
+    penalty_at_send): compare current economy state to the snapshot at send time.
+
+    - If profit grew OR shipped items increased since the message was sent:
+      bump A_{u→v} by 0.05 (capped at 1.0) — message preceded a good outcome.
+    - If cumulative penalties increased since the message was sent:
+      drop A_{u→v} by 0.05 (floored at 0.0) — message was active during a penalty.
+
+    Entries older than 5 ticks are consumed (regardless of outcome) and removed.
+    """
+    if _env_v2 is None:
+        return
+
+    current_profit, current_shipped, current_penalties = _current_economy_snapshot()
+    stale_threshold = 5
+
+    for edge_key in list(_pending_message_log.keys()):
+        remaining = []
+        for entry in _pending_message_log[edge_key]:
+            # Support both 3-tuple (legacy) and 4-tuple (with penalty)
+            if len(entry) == 4:
+                sent_tick, profit_at_send, shipped_at_send, penalty_at_send = entry
+            else:
+                sent_tick, profit_at_send, shipped_at_send = entry
+                penalty_at_send = 0.0
+
+            age = tick - sent_tick
+            if age < stale_threshold:
+                remaining.append(entry)
+                continue
+
+            # Evaluate outcome over the 5-tick window
+            profit_grew = current_profit > profit_at_send
+            shipped_grew = current_shipped > shipped_at_send
+            penalty_increased = current_penalties > penalty_at_send
+
+            current_score = _edge_scores.get(edge_key, 0.5)
+            if profit_grew or shipped_grew:
+                new_score = min(1.0, current_score + 0.05)
+            elif penalty_increased:
+                new_score = max(0.0, current_score - 0.05)
+            else:
+                new_score = current_score
+            _edge_scores[edge_key] = round(new_score, 4)
+
+        _pending_message_log[edge_key] = remaining
+
+
+def init_edge_scores(scores: dict[str, float]) -> None:
+    """Seed module-level edge scores from orchestrator state."""
+    _edge_scores.clear()
+    _edge_scores.update(scores)
 
 
 ROLE_INCENTIVES = {
@@ -112,7 +202,13 @@ ROLE_INCENTIVES = {
         "Your goal: make strategic decisions — hire agents when bottlenecked, "
         "fire idle agents to save budget, assign tasks, view financials, "
         "and optimize machine speeds at key bottlenecks. "
-        "Available actions: hire, fire, assign_task, view_financials, set_budget_allocation, wait."
+        "You can also call update_policy to change the floor-worker scripted rules in real time — "
+        "for example lowering the replenishment_urgency_threshold when buffers run dry often, "
+        "or raising management_hire_ops_budget_floor to be more conservative about hiring. "
+        "Valid rules for update_policy: replenishment_urgency_threshold (int, default 3), "
+        "operations_pickup_radius (int or null), engineering_idle_repair_trigger (int, default 0), "
+        "management_hire_engineer_threshold (int, default 1), management_hire_ops_budget_floor (int, default 300). "
+        "Available actions: hire, fire, assign_task, view_financials, set_budget_allocation, update_policy, wait."
     ),
 }
 
@@ -134,7 +230,11 @@ async def _call_llm_v2(
     available_actions: list[str],
 ) -> dict:
     incentive = ROLE_INCENTIVES.get(role, "You are a factory agent. Act to maximize production efficiency.")
-    skill_list = json.dumps(available_actions[:20])
+    if role == "management":
+        action_list = list(available_actions[:20]) + ["update_policy"]
+    else:
+        action_list = list(available_actions[:20])
+    skill_list = json.dumps(action_list)
     system_prompt = (
         f"{incentive}\n\n"
         f"Available actions: {skill_list}\n\n"
@@ -196,12 +296,16 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
     """
     Run one LLM reasoning step for a subset of agents (not all — too many API calls).
     Returns trace dicts for socket.io emission.
+
+    Sweep_edge_scores is called by orchestrator evaluate() every 5 ticks (policy-agnostic).
     """
     if env is None:
         return []
 
     traces: list[dict] = []
     now = time.time()
+
+    tick = env.world.tick
 
     LLM_AGENTS_PER_STEP = ["management_1", "procurement_1"]
 
@@ -226,8 +330,45 @@ async def run_manufacturing_v2_step(generation: int, env: "ManufacturingEnvV2") 
         params = parsed.get("params", {})
         reasoning = parsed.get("reasoning", "")
 
-        if action not in ("wait", "idle"):
+        if action == "update_policy" and agent.role.value == "management":
+            from agents.manufacturing_policies import apply_policy_override
+            rule = params.get("rule", "")
+            value = params.get("value")
+            ok, msg = apply_policy_override(rule, value)
+            # Post broadcast to all workers so edges from management_1 are tracked
+            for target_id in list(_env_v2.world.agents.keys()) if _env_v2 else []:
+                if target_id != agent_id:
+                    _post_to_inbox(target_id, {
+                        "type": "policy_broadcast",
+                        "from": agent_id,
+                        "rule": rule,
+                        "value": value,
+                        "timestamp": now,
+                    })
+            traces.append({
+                "run_id": f"gen_{generation}",
+                "role": agent.role.value,
+                "content": f"[{agent_id}] update_policy({params}) → {msg}",
+                "timestamp": now,
+                "agent_name": agent_id,
+                "agent_role": agent.role.value,
+                "action": action,
+                "parameters": params,
+                "reasoning": reasoning,
+            })
+            continue
+
+        if action not in ("wait", "idle", "update_policy"):
             agent.action_buffer.insert(0, {"type": action, "params": params})
+            # Record the directed message edge for credit assignment
+            target = params.get("target_agent") or params.get("agent_id")
+            if target and target in (env.world.agents if env else {}):
+                _post_to_inbox(target, {
+                    "type": action,
+                    "from": agent_id,
+                    "params": params,
+                    "timestamp": now,
+                })
 
         traces.append({
             "run_id": f"gen_{generation}",
@@ -279,6 +420,16 @@ PLANNER_SKILLS = [
     {"name": "broadcast_to_stage", "description": "Send a message to all Workers at a given stage.", "parameters": {"stage": "string", "message": "string"}},
     {"name": "approve_release", "description": "Authorize finished goods to leave the output buffer.", "parameters": {"quantity": "integer"}},
     {"name": "escalate", "description": "Surface an unresolvable issue to the system log.", "parameters": {"description": "string"}},
+    {
+        "name": "update_policy",
+        "description": (
+            "Modify a scripted floor-worker policy rule in real time. "
+            "Valid rules: replenishment_urgency_threshold (int), operations_pickup_radius (int|null), "
+            "engineering_idle_repair_trigger (int), management_hire_engineer_threshold (int), "
+            "management_hire_ops_budget_floor (int)."
+        ),
+        "parameters": {"rule": "string", "value": "any"},
+    },
 ]
 
 _LEGACY_RESPONSE_SCHEMA = """
@@ -360,6 +511,13 @@ def _dispatch_worker_skill(agent_id: str, stage_name: str, action: str, paramete
 
 
 def _dispatch_planner_skill(agent_id: str, action: str, parameters: dict) -> str:
+    if action == "update_policy":
+        from agents.manufacturing_policies import apply_policy_override
+        rule = parameters.get("rule", "")
+        value = parameters.get("value")
+        ok, msg = apply_policy_override(rule, value)
+        log.info("Planner update_policy: %s", msg)
+        return msg
     if _env is None:
         return "env not initialised"
     if action not in _VALID_PLANNER_ACTIONS:

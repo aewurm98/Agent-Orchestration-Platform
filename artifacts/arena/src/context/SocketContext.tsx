@@ -209,6 +209,7 @@ type SocketContextType = {
   emitMfgAction: (agentId: string, actionType: string, params?: Record<string, unknown>) => void;
   setIsRunning: (running: boolean) => void;
   clearHitlRequest: () => void;
+  clearSessionState: () => void;
 };
 
 export const SocketContext = createContext<SocketContextType | undefined>(undefined);
@@ -306,11 +307,25 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     [socket]
   );
 
+  const clearSessionState = useCallback(() => {
+    setEvolutionData([]);
+    setTraces([]);
+    setDagData(null);
+    setMfgState(null);
+    setMfgMetrics(null);
+    setMfgAlerts([]);
+    setHitlRequest(null);
+    setCurrentGeneration(0);
+    setGameState(null);
+    setIsRunning(false);
+  }, []);
+
   const emitScenarioSelect = useCallback(
     (scenario: string) => {
+      clearSessionState();
       if (socket) socket.emit("scenario_select", { scenario });
     },
-    [socket]
+    [socket, clearSessionState]
   );
 
   const emitStartEvolution = useCallback(() => {
@@ -351,6 +366,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         emitMfgAction,
         setIsRunning,
         clearHitlRequest,
+        clearSessionState,
       }}
     >
       {children}
