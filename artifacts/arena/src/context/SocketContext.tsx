@@ -108,6 +108,13 @@ export type MfgAlert = {
   agent_id?: string;
   budget?: number;
   order_id?: string;
+  // Order-specific fields
+  is_rush?: boolean;
+  deadline_tick?: number;
+  base_price?: number;
+  revenue?: number;
+  // Sale-specific fields
+  item_type?: string;
 };
 
 export type MfgGameState = {
@@ -174,6 +181,12 @@ export type HitlRequest = {
   proposed_action: string;
 };
 
+export type GenomeSnapshot = {
+  agent_counts: Record<string, number>;
+  machine_speeds: Record<string, string>;
+  order_arrival_rate: number;
+};
+
 export type FitnessUpdate = {
   generation: number;
   parent_fitness: number;
@@ -182,6 +195,11 @@ export type FitnessUpdate = {
   topology_diff: string;
   cost_per_task: number;
   latency: number;
+  // Extended fields populated by the generational EA loop
+  genome?: GenomeSnapshot;
+  improved?: boolean;
+  // Number of consecutive generations without fitness improvement
+  stagnation?: number;
 };
 
 export type GenerationComplete = {

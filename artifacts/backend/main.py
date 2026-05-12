@@ -177,30 +177,40 @@ def _build_dag_update(orch_state: dict, scenario: str) -> dict:
 async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     """
     Main simulation loop.
-    - Game env ticks every 500 ms; emits game_state_update each tick.
-    - Every LANGGRAPH_TICK_INTERVAL ticks a LangGraph generation step runs.
+    Manufacturing: ticks every 500ms; every 25 ticks runs one EA generation
+    (evaluate → elitism → mutate genome → apply live mutations → emit fitness_update).
+    Other scenarios: LangGraph orchestrator steps every 5 ticks.
     """
     LANGGRAPH_TICK_INTERVAL = 5
 
-    # ── Manufacturing v2 loop ─────────────────────────────────────────────────
+    # ── Manufacturing v2 loop (Generational EA) ───────────────────────────────
     if scenario == "manufacturing":
         from agents.manufacturing_policies import get_policy
         from agents import manufacturing_roles
         from agents.manufacturing_roles import run_manufacturing_v2_step
+        from evolution.manufacturing_genome import ManufacturingGenome
+        from game_envs.manufacturing_v2.entities import SpeedMode as _SpeedMode
 
         env = ManufacturingEnvV2(FIRST_FACTORY_CONFIG)
         mfg_set_env(env)
         manufacturing_roles.set_active_env_v2(env)
 
-        # Policy selection: read from run config (random / scripted / llm)
         policy_name = active_run.get("policy", "scripted")
         policy = get_policy(str(policy_name))
-        game_tick_counter = 0
-        metrics_interval = 5
+
+        # ── EA state ──────────────────────────────────────────────────────────
+        GENERATION_TICKS = 25   # ticks per EA generation (fast enough to see multiple gens in demo)
+        METRICS_INTERVAL = 5    # emit metrics_update every N ticks for MetricsBar
+
+        genome = ManufacturingGenome.default()
+        parent_genome_dict = genome.to_dict()
+        parent_fitness: float = 0.0
+        consecutive_drops: int = 0
+        game_tick_counter: int = 0
 
         orch_state: dict = {
             "scenario": scenario,
-            "objective": "Maximise manufacturing profit by coordinating 5 specialized agent types on a grid world",
+            "objective": "Maximise manufacturing profit by evolving machine speeds and order rates across generations",
             "agent_configs": [
                 {"agent_id": aid, "role": a.role.value}
                 for aid, a in env.world.agents.items()
@@ -217,7 +227,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             },
             "current_fitness": 0.0,
             "parent_fitness": 0.0,
-            "topology_diff": "+0/0 edges",
+            "topology_diff": "gen:0 — baseline",
             "latency": 0.0,
             "cost": 0.0,
             "generation": 0,
@@ -229,10 +239,8 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "run_id": run_id,
             "traces": [],
         }
-        trace_cursor = 0
 
         while active_run.get("running"):
-            # Pause: sleep and re-check; state is preserved in `env`
             if active_run.get("paused"):
                 await asyncio.sleep(0.1)
                 continue
@@ -244,10 +252,6 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             game_state = env.to_json()
 
             await sio.emit("game_state_update", game_state)
-            # tick_update intentionally sends full state (same payload as
-            # game_state_update) for real-time frontend rendering.  Headless
-            # EA/API consumers should use POST /api/mfg/step which returns a
-            # proper protocol-minimal delta instead.
             await sio.emit("tick_update", game_state)
 
             for alert in tick_result.get("alerts", []):
@@ -262,33 +266,108 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
 
             game_tick_counter += 1
 
-            if game_tick_counter % metrics_interval == 0:
+            # ── Periodic metrics update ────────────────────────────────────────
+            if game_tick_counter % METRICS_INTERVAL == 0:
                 await sio.emit("metrics_update", env.get_metrics())
-                orch_state = await run_one_generation(orch_state)
-                generation: int = orch_state.get("generation", 0)
-                current_fitness: float = env.get_fitness()
-                parent_fitness: float = orch_state.get("parent_fitness", current_fitness * 0.9)
-                orch_state["current_fitness"] = current_fitness
+
+            # ── Generation boundary: evaluate → elitism → mutate ──────────────
+            if game_tick_counter > 0 and game_tick_counter % GENERATION_TICKS == 0:
+                child_fitness: float = env.get_fitness()
+                metrics_snap: dict = env.get_metrics()
+                improved: bool = child_fitness >= parent_fitness
+
+                if improved:
+                    parent_fitness = child_fitness
+                    parent_genome_dict = genome.to_dict()
+                    consecutive_drops = 0
+                else:
+                    consecutive_drops += 1
+                    # Elitism: revert genome to the last known-good parent
+                    genome = ManufacturingGenome.from_dict(parent_genome_dict)
+
+                # Confidence tied to real miss rate (not random)
+                orders_total = (
+                    metrics_snap.get("orders_fulfilled", 0)
+                    + metrics_snap.get("orders_missed", 0)
+                )
+                miss_rate = metrics_snap.get("orders_missed", 0) / max(orders_total, 1)
+                confidence = round(max(0.25, 1.0 - miss_rate * 2.5), 2)
+                if consecutive_drops >= 3:
+                    confidence = min(confidence, 0.45)
+
+                # Mutate genome and track what changed
+                old_speeds = dict(genome.machine_speeds)
+                old_rate = genome.order_arrival_rate
+                new_genome = genome.mutate()
+
+                speed_changes = [
+                    m for m in new_genome.machine_speeds
+                    if new_genome.machine_speeds[m] != old_speeds.get(m)
+                ]
+                rate_changed = abs(new_genome.order_arrival_rate - old_rate) > 0.5
+                count_changes = [
+                    r for r in new_genome.agent_counts
+                    if new_genome.agent_counts[r] != genome.agent_counts.get(r)
+                ]
+
+                if speed_changes:
+                    mid = speed_changes[0]
+                    mutation_label = f"speed:{mid.split('_')[0]}→{new_genome.machine_speeds[mid]}"
+                elif rate_changed:
+                    mutation_label = f"order_rate→{int(new_genome.order_arrival_rate)}"
+                elif count_changes:
+                    role = count_changes[0]
+                    mutation_label = f"agents:{role}→{new_genome.agent_counts[role]}"
+                else:
+                    mutation_label = "genome:no-op"
+
+                # Apply live mutations (no env reset — machine speeds and order rate
+                # take effect immediately on the running world)
+                for mid, speed_str in new_genome.machine_speeds.items():
+                    if mid in env.world.machines:
+                        try:
+                            env.world.machines[mid].speed_mode = _SpeedMode(speed_str)
+                        except ValueError:
+                            pass
+                env.world.order_arrival_rate = int(round(new_genome.order_arrival_rate))
+                genome = new_genome
+
+                orch_state["generation"] = orch_state.get("generation", 0) + 1
+                orch_state["current_fitness"] = child_fitness
                 orch_state["parent_fitness"] = parent_fitness
+                orch_state["confidence"] = confidence
+                orch_state["hitl_pending"] = confidence < 0.6
+
+                gen: int = orch_state["generation"]
+                gdict = genome.to_dict()
+                cost_per_task = round(
+                    metrics_snap.get("total_costs", 0.0)
+                    / max(metrics_snap.get("orders_fulfilled", 1), 1),
+                    3,
+                )
 
                 await sio.emit("fitness_update", {
-                    "generation": generation,
+                    "generation": gen,
                     "parent_fitness": round(parent_fitness, 4),
-                    "best_fitness": round(current_fitness, 4),
-                    "mutation_type": "scripted",
-                    "topology_diff": f"+{game_tick_counter}/0 ticks",
-                    "cost_per_task": round(random.uniform(0.001, 0.05), 5),
-                    "latency": round(random.uniform(0.2, 1.5), 3),
+                    "best_fitness": round(child_fitness, 4),
+                    "mutation_type": mutation_label,
+                    "topology_diff": mutation_label,
+                    "cost_per_task": cost_per_task,
+                    "latency": round(metrics_snap.get("avg_latency", 0.5), 3),
+                    # Extended fields consumed by EvoDashboard genome panel
+                    "genome": gdict,
+                    "improved": improved,
+                    # Consecutive generations without improvement — triggers stagnation UI
+                    "stagnation": consecutive_drops,
                 })
 
                 dag_payload = _build_dag_update(orch_state, scenario)
                 await sio.emit("dag_update", dag_payload)
 
-                # Only run LLM step in llm policy mode; random/scripted
-                # must not have their action_buffers contaminated by LLM calls.
+                # LLM reasoning step (management + procurement) in llm mode only
                 llm_traces: list[dict] = []
                 if active_run.get("policy", "scripted") == "llm":
-                    llm_traces = await run_manufacturing_v2_step(generation, env)
+                    llm_traces = await run_manufacturing_v2_step(gen, env)
                 for trace in llm_traces:
                     payload = {
                         "run_id": run_id,
@@ -301,6 +380,18 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                             payload[field_name] = trace[field_name]
                     await sio.emit("agent_thought", payload)
                     await asyncio.sleep(0.05)
+
+                if mode == "hitl" and orch_state.get("hitl_pending"):
+                    await sio.emit("hitl_request", {
+                        "run_id": run_id,
+                        "generation": gen,
+                        "plan": f"Mutation: {mutation_label}",
+                        "confidence": confidence,
+                        "proposed_action": (
+                            f"speeds:{list(gdict['machine_speeds'].values())[:3]}, "
+                            f"order_rate:{gdict['order_arrival_rate']}"
+                        ),
+                    })
 
             if env.done:
                 await sio.emit("game_over", {

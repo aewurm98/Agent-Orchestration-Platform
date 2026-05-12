@@ -16,7 +16,7 @@ import HITLModal from "@/components/HITLModal";
 
 export default function Arena() {
   const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, setIsRunning } = useSocket();
-  const [scenario, setScenario] = useState("Supply Chain");
+  const [scenario, setScenario] = useState("Manufacturing");
   const [isHitl, setIsHitl] = useState(false);
 
   const handleStart = async () => {

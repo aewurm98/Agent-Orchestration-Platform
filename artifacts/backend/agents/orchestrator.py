@@ -146,8 +146,8 @@ def evaluate(state: ArenaState) -> ArenaState:
 
     if state.get("scenario") == "manufacturing":
         from agents import manufacturing_roles
-        if manufacturing_roles._env is not None:
-            success_rate = manufacturing_roles._env.get_objective_value()
+        if manufacturing_roles._env_v2 is not None:
+            success_rate = manufacturing_roles._env_v2.get_fitness()
 
     fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
     state["parent_fitness"] = state.get("current_fitness", 0.0)

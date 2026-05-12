@@ -1,5 +1,70 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MfgGameState } from "@/context/SocketContext";
+import { useSocket } from "@/hooks/useSocket";
+
+// ── Particle system for item-output animations ────────────────────────────────
+
+type Particle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  color: string;
+  radius: number;
+  life: number;
+  maxLife: number;
+};
+
+function spawnParticles(
+  fromX: number,
+  fromY: number,
+  cellW: number,
+  cellH: number,
+  color: string,
+  count: number,
+  buf: Particle[],
+) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = (0.6 + Math.random() * 1.2) * (cellW / 40);
+    buf.push({
+      x: fromX + cellW / 2 + (Math.random() - 0.5) * cellW * 0.3,
+      y: fromY + cellH / 2 + (Math.random() - 0.5) * cellH * 0.3,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      color,
+      radius: Math.max(1.5, Math.min(cellW, cellH) * 0.07),
+      life: 28 + Math.floor(Math.random() * 14),
+      maxLife: 42,
+    });
+  }
+}
+
+function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
+  const alpha = p.life / p.maxLife;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = p.color;
+  ctx.shadowBlur = 6 * alpha;
+  ctx.fillStyle = p.color;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius * alpha, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// Item type → particle color map
+const ITEM_PARTICLE_COLOR: Record<string, string> = {
+  raw_ore:         "#f87171",
+  raw_silicon:     "#a371f7",
+  metal_ingot:     "#f59e0b",
+  stamped_part:    "#fbbf24",
+  circuit:         "#00d9ff",
+  subassembly:     "#7ee787",
+  inspected_unit:  "#86efac",
+  finished_product: "#22d3ee",
+  reject:          "#6b7280",
+};
 
 const CELL_COLORS: Record<string, string> = {
   floor:         "#0f1923",
@@ -356,6 +421,30 @@ export default function GridCanvas({ state }: { state: MfgGameState }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const tickRef = useRef(0);
+  const { evolutionData } = useSocket();
+
+  // Particle system refs — live between renders without triggering re-render
+  const particlesRef = useRef<Particle[]>([]);
+  const prevOutputRef = useRef<Record<string, number>>({});  // machine id → last output_queue_len
+
+  // Track generation transitions for flash overlay
+  const [genFlash, setGenFlash] = useState<{ gen: number; label: string; improved: boolean } | null>(null);
+  const lastGenRef = useRef(0);
+
+  useEffect(() => {
+    if (evolutionData.length === 0) return;
+    const latest = evolutionData[evolutionData.length - 1];
+    if (latest.generation > lastGenRef.current) {
+      lastGenRef.current = latest.generation;
+      setGenFlash({
+        gen: latest.generation,
+        label: latest.mutation_type ?? "genome",
+        improved: latest.improved ?? true,
+      });
+      const t = setTimeout(() => setGenFlash(null), 1800);
+      return () => clearTimeout(t);
+    }
+  }, [evolutionData]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -397,8 +486,36 @@ export default function GridCanvas({ state }: { state: MfgGameState }) {
           const x = machine.col * cellW;
           const y = machine.row * cellH;
           drawMachine(ctx, machine, x, y, cellW, cellH, t);
+
+          // Particle emission: detect new items in output queue since last frame
+          const prevOut = prevOutputRef.current[machine.id] ?? 0;
+          const curOut = machine.output_queue_len ?? 0;
+          if (curOut > prevOut) {
+            // Pick color from first item in output queue, fall back to machine state color
+            const outItem = machine.output_queue?.[0];
+            const pColor =
+              (outItem ? ITEM_PARTICLE_COLOR[outItem.type] : null) ??
+              MACHINE_STATE_COLOR[machine.state] ??
+              "#00d9ff";
+            spawnParticles(x, y, cellW, cellH, pColor, 3, particlesRef.current);
+          }
+          prevOutputRef.current[machine.id] = curOut;
         }
       }
+
+      // Draw and age particles
+      const stillAlive: Particle[] = [];
+      for (const p of particlesRef.current) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.04; // slight gravity
+        p.life -= 1;
+        if (p.life > 0) {
+          drawParticle(ctx, p);
+          stillAlive.push(p);
+        }
+      }
+      particlesRef.current = stillAlive;
 
       if (state.items) {
         const itemsByCell: Record<string, typeof state.items> = {};
@@ -462,10 +579,44 @@ export default function GridCanvas({ state }: { state: MfgGameState }) {
   }, [state]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full block"
-      data-testid="mfg-grid-canvas"
-    />
+    <div className="w-full h-full relative">
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full block"
+        data-testid="mfg-grid-canvas"
+      />
+      {genFlash && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+          style={{ animation: "fadeOut 1.8s ease-out forwards" }}
+        >
+          <div
+            className="px-8 py-4 rounded-lg border text-center"
+            style={{
+              backgroundColor: "rgba(10,14,21,0.88)",
+              borderColor: genFlash.improved ? "#00d9ff" : "#f59e0b",
+              boxShadow: `0 0 32px ${genFlash.improved ? "#00d9ff44" : "#f59e0b44"}`,
+            }}
+          >
+            <div
+              className="text-3xl font-mono font-bold tracking-widest"
+              style={{ color: genFlash.improved ? "#00d9ff" : "#f59e0b" }}
+            >
+              GEN {String(genFlash.gen).padStart(4, "0")}
+            </div>
+            <div className="text-xs font-mono mt-1" style={{ color: genFlash.improved ? "#7ee787" : "#f87171" }}>
+              {genFlash.improved ? "▲ FITNESS IMPROVED" : "▼ PARENT RETAINED"} · {genFlash.label}
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`
+        @keyframes fadeOut {
+          0%   { opacity: 1; }
+          60%  { opacity: 1; }
+          100% { opacity: 0; }
+        }
+      `}</style>
+    </div>
   );
 }

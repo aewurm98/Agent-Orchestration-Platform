@@ -3,14 +3,15 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 
 export default function MetricsBar() {
-  const { evolutionData, gameState, socket } = useSocket();
+  const { evolutionData, gameState, mfgState, socket } = useSocket();
 
   const latestFitness = evolutionData[evolutionData.length - 1] ?? null;
   const costPerTask = latestFitness?.cost_per_task ?? 0;
   const latencyMs = latestFitness ? latestFitness.latency * 1000 : 0;
   const bestFitness = latestFitness?.best_fitness ?? 0;
-  const tick = gameState?.tick ?? 0;
-  const scenario = gameState?.scenario ?? "None";
+  // During manufacturing, gameState is null — fall back to mfgState
+  const tick = mfgState?.tick ?? gameState?.tick ?? 0;
+  const scenario = mfgState?.scenario ?? gameState?.scenario ?? "None";
 
   // Use the stable socket ID (backend-provided, persists for the connection lifetime)
   // Formatted as RUN-XXXX using last 4 hex chars of the socket id
