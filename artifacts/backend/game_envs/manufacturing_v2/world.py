@@ -215,6 +215,12 @@ class WorldModel:
                         self.economy.record_order_fulfilled()
                         self._active_orders.remove(matched_order)
                         self._fulfilled_orders.append(matched_order)
+                        alerts.append({
+                            "type": "order",
+                            "event": "order_fulfilled",
+                            "order_id": matched_order.id,
+                            "revenue": round(revenue, 2),
+                        })
                 alerts.append({
                     "type": "sale",
                     "agent_id": agent_id,
@@ -262,7 +268,15 @@ class WorldModel:
         # Use exponential inter-arrival times to model a Poisson process.
         # Spawn all orders whose inter-arrival time falls within this tick.
         while self.tick >= self._next_order_tick:
-            self._spawn_order()
+            new_order = self._spawn_order()
+            alerts.append({
+                "type": "order",
+                "event": "order_arrived",
+                "order_id": new_order.id,
+                "is_rush": new_order.is_rush,
+                "deadline_tick": new_order.deadline_tick,
+                "base_price": round(new_order.base_price, 2),
+            })
             inter = self.rng.expovariate(1.0 / max(self.order_arrival_rate, 1))
             self._next_order_tick += inter
 
@@ -303,7 +317,7 @@ class WorldModel:
                 return o
         return None
 
-    def _spawn_order(self) -> None:
+    def _spawn_order(self) -> "Order":
         self._order_counter += 1
         is_rush = self.rng.random() < 0.2
         deadline = self.tick + self.rng.randint(20, 80)
@@ -319,6 +333,7 @@ class WorldModel:
         )
         self._active_orders.append(order)
         self.orders.append(order)
+        return order
 
     def _handle_hire(self, agent_type_str: str, alerts: list) -> None:
         try:

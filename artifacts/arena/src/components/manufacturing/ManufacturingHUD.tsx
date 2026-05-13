@@ -93,6 +93,55 @@ function OrdersPanel({ orders }: { orders: MfgGameState["active_orders"] }) {
   );
 }
 
+// ── Live order activity feed ──────────────────────────────────────────────────
+
+const ORDER_EVENT_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
+  order_arrived:   { label: "Arrived",   color: "#00d9ff", icon: "📋" },
+  order_fulfilled: { label: "Fulfilled", color: "#7ee787", icon: "✓" },
+  order_missed:    { label: "Missed",    color: "#f87171", icon: "✗" },
+};
+
+function OrderFeed({ alerts }: { alerts: AlertItem[] }) {
+  // Filter to order events only, keep most recent 8
+  const orderEvents = alerts
+    .filter((a) => a.event != null && ORDER_EVENT_CONFIG[a.event] != null)
+    .slice(-8)
+    .reverse();
+
+  return (
+    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-[9px] font-mono text-[#8b949e] uppercase">Order Feed</span>
+        <span className="text-[9px] font-mono text-[#4d5566]">{orderEvents.length} events</span>
+      </div>
+      {orderEvents.length === 0 ? (
+        <span className="text-[9px] font-mono text-[#4d5566]">Waiting for orders…</span>
+      ) : (
+        <div className="flex flex-col gap-0.5 max-h-[96px] overflow-y-auto">
+          {orderEvents.map((ev) => {
+            const evKey = ev.event!;
+            const cfg = ORDER_EVENT_CONFIG[evKey] ?? { label: evKey, color: "#8b949e", icon: "·" };
+            return (
+              <div key={ev.id} className="flex items-center gap-1.5 text-[9px] font-mono leading-tight">
+                <span style={{ color: cfg.color }}>{cfg.icon}</span>
+                <span style={{ color: cfg.color }} className="shrink-0">{cfg.label}</span>
+                {ev.is_rush && <span className="text-[#f87171]">⚡RUSH</span>}
+                <span className="text-[#6e7681] truncate">{ev.order_id}</span>
+                {ev.revenue != null && (
+                  <span className="ml-auto text-[#7ee787] shrink-0">+${ev.revenue.toFixed(0)}</span>
+                )}
+                {ev.base_price != null && evKey === "order_arrived" && (
+                  <span className="ml-auto text-[#f59e0b] shrink-0">${ev.base_price.toFixed(0)}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MachineStatusRow({ machines }: { machines: MfgGameState["machines"] }) {
   if (!machines) return null;
   const machineList = Object.values(machines);
@@ -204,6 +253,15 @@ interface AlertItem {
   type: string;
   event?: string;
   message?: string;
+  // Order-specific fields (populated for type: "order" events)
+  order_id?: string;
+  is_rush?: boolean;
+  deadline_tick?: number;
+  base_price?: number;
+  revenue?: number;
+  // Sale-specific
+  agent_id?: string;
+  item_type?: string;
 }
 
 function ToastAlerts({ alerts }: { alerts: AlertItem[] }) {
@@ -309,9 +367,14 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
         </div>
       )}
 
-      {/* Orders */}
+      {/* Active orders (current queue) */}
       <div className="shrink-0">
         <OrdersPanel orders={state.active_orders} />
+      </div>
+
+      {/* Live order event feed */}
+      <div className="shrink-0">
+        <OrderFeed alerts={alertsWithIds} />
       </div>
 
       {/* Machines */}
