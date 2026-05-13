@@ -237,6 +237,7 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         parent_fitness: float = 0.0
         consecutive_drops: int = 0
         game_tick_counter: int = 0
+        trace_cursor: int = 0
 
         orch_state: dict = {
             "scenario": scenario,
@@ -494,8 +495,8 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                         "plan": f"Mutation: {mutation_label}",
                         "confidence": confidence,
                         "proposed_action": (
-                            f"speeds:{list(gdict['machine_speeds'].values())[:3]}, "
-                            f"order_rate:{gdict['order_arrival_rate']}"
+                            f"speeds:{list(gdict.get('machine_speeds', {}).values())[:3]}, "
+                            f"order_rate:{gdict.get('order_arrival_rate', 'n/a')}"
                         ),
                     })
 
