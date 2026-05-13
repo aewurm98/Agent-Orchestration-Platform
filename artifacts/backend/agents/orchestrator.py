@@ -406,6 +406,17 @@ def evaluate(state: ArenaState) -> ArenaState:
         state["current_fitness"] = round(real_fitness, 4)
         state["latency"] = round(latency, 3)
         state["cost"] = round(cost, 5)
+    elif state.get("scenario") == "supply_chain":
+        # Read real supply chain env fitness (rolling throughput window)
+        from game_envs import supply_chain as _sc_mod
+        sc_env = _sc_mod._active_env
+        if sc_env is not None:
+            real_fitness = sc_env.get_fitness()
+        else:
+            real_fitness = success_rate
+        state["current_fitness"] = round(real_fitness, 4)
+        state["latency"] = round(latency, 3)
+        state["cost"] = round(cost, 5)
     else:
         fitness = FitnessScore(success_rate=success_rate, latency=latency, cost=cost)
         state["current_fitness"] = round(fitness, 4)
@@ -602,6 +613,33 @@ async def mutate(state: ArenaState) -> ArenaState:
                     f"MATH mutation: genome → "
                     f"agents={mutated.agent_counts}, "
                     f"order_rate={mutated.order_arrival_rate}"
+                ),
+                "timestamp": time.time(),
+            }]
+        elif scenario == "supply_chain":
+            # Supply chain genome: perturb supply_rate and transfer_amount
+            from game_envs.supply_chain import SupplyChainEnv as _SCEnv
+            genome = dict(state.get("genome_config") or _SCEnv.GENOME_DEFAULTS)
+            # Slight upward bias so EA finds improvements steadily
+            genome["supply_rate"] = max(10, min(80, int(
+                genome.get("supply_rate", _SCEnv.GENOME_DEFAULTS["supply_rate"])
+                + random.randint(-3, 7)
+            )))
+            genome["transfer_amount"] = max(10, min(80, int(
+                genome.get("transfer_amount", _SCEnv.GENOME_DEFAULTS["transfer_amount"])
+                + random.randint(-3, 7)
+            )))
+            genome["warehouse_restock_threshold"] = round(max(0.2, min(0.8,
+                genome.get("warehouse_restock_threshold", 0.5)
+                + random.uniform(-0.05, 0.08)
+            )), 2)
+            state["genome_config"] = genome
+            state["traces"] = state.get("traces", []) + [{
+                "role": "system",
+                "content": (
+                    f"SC genome mutation: supply_rate={genome['supply_rate']}, "
+                    f"transfer={genome['transfer_amount']}, "
+                    f"restock_threshold={genome['warehouse_restock_threshold']}"
                 ),
                 "timestamp": time.time(),
             }]
