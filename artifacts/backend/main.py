@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agents.orchestrator import run_orchestrator, run_one_generation
 from game_envs.supply_chain import SupplyChainEnv
+import game_envs.supply_chain as _sc_module
 from game_envs.disaster_relief import DisasterReliefEnv
 from game_envs.peer_agents import PeerAgentsEnv
 from game_envs.manufacturing import ManufacturingEnvLegacy
@@ -520,6 +521,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     env_cls = SCENARIOS.get(scenario, SupplyChainEnv)
     env = env_cls()
 
+    # Register supply chain env so the orchestrator evaluate node can read real fitness
+    if scenario == "supply_chain":
+        _sc_module._active_env = env
+
     orch_state: dict = await run_orchestrator(
         scenario=scenario,
         run_id=run_id,
@@ -532,6 +537,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     orch_state["inter_ticks"] = active_run.get("inter_ticks", 100)
     orch_state["inter_episode_done"] = False
     orch_state["scenario"] = scenario
+
+    # Initialise supply chain genome so the first mutation has a baseline to perturb
+    if scenario == "supply_chain" and not orch_state.get("genome_config"):
+        orch_state["genome_config"] = dict(SupplyChainEnv.GENOME_DEFAULTS)
 
     game_tick_counter = 0
     trace_cursor = 0
@@ -572,8 +581,12 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             orch_state = await run_one_generation(orch_state)
             orch_state["inter_episode_done"] = False
 
-            # Reset env for next episode
+            # Reset env for next episode, then apply evolved genome
             env = env_cls()
+            if hasattr(env, "apply_genome") and orch_state.get("genome_config"):
+                env.apply_genome(orch_state["genome_config"])
+            if scenario == "supply_chain":
+                _sc_module._active_env = env
 
             generation = orch_state.get("generation", 0)
             current_fitness = orch_state.get("current_fitness", 0.0)
@@ -630,6 +643,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
 
         if game_tick_counter % LANGGRAPH_TICK_INTERVAL == 0:
             orch_state = await run_one_generation(orch_state)
+
+            # Apply evolved genome parameters to the running env
+            if hasattr(env, "apply_genome") and orch_state.get("genome_config"):
+                env.apply_genome(orch_state["genome_config"])
 
             generation: int = orch_state.get("generation", 0)
             current_fitness: float = orch_state.get("current_fitness", 0.0)
