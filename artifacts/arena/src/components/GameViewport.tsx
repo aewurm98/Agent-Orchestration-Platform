@@ -90,7 +90,12 @@ function drawAgent(
   ctx.font = `bold ${Math.max(7, half * 0.42)}px monospace`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(String(agent.inventory), cx, cy + half * 0.52);
+  // Retailers: show cumulative delivered count (more meaningful than draining inventory)
+  const displayCount =
+    agent.role === "retailer" && (agent as any).delivered != null
+      ? (agent as any).delivered
+      : agent.inventory;
+  ctx.fillText(String(displayCount), cx, cy + half * 0.52);
 }
 
 function drawResourcePanel(

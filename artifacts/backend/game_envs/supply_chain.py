@@ -209,8 +209,9 @@ class SupplyChainEnv:
         }
 
         # Serialize — only expose fields the frontend needs
-        serialized_agents = [
-            {
+        serialized_agents = []
+        for a in self._agents:
+            entry: dict = {
                 "id":        a["id"],
                 "role":      a["role"],
                 "x":         a["x"],
@@ -218,8 +219,10 @@ class SupplyChainEnv:
                 "inventory": int(a.get("inventory", 0)),
                 "state":     a.get("state", "idle"),
             }
-            for a in self._agents
-        ]
+            if a["role"] == "retailer":
+                entry["delivered"] = int(a.get("delivered", 0))
+                entry["demand"]    = int(a.get("demand", 0))
+            serialized_agents.append(entry)
 
         return GridState(
             agents=serialized_agents,
