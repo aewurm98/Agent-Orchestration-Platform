@@ -61,7 +61,7 @@ export default function HITLModal() {
         <div className="p-4 border-b border-[#ebe5d6] flex justify-between items-center bg-[#b45309]/10">
           <div className="flex items-center gap-2 text-[#b45309]">
             <AlertTriangle size={18} />
-            <h2 className="font-semibold uppercase tracking-wider text-sm">Human Override Required</h2>
+            <h2 className="font-semibold uppercase tracking-wider text-sm">Approval Required</h2>
           </div>
           
           <div className="relative w-8 h-8 flex items-center justify-center">
@@ -102,9 +102,9 @@ export default function HITLModal() {
 
           {mode === "override" && (
             <div className="mt-2 animate-in slide-in-from-top-2">
-              <Input 
+              <Input
                 autoFocus
-                placeholder="Enter constraint or new directive..." 
+                placeholder="e.g. Prioritize throughput over cost"
                 value={constraint}
                 onChange={e => setConstraint(e.target.value)}
                 className="bg-[#f4f0e7] border-[#b45309] focus-visible:ring-[#b45309]"
@@ -121,7 +121,7 @@ export default function HITLModal() {
                 <XSquare size={16} className="mr-2" /> Stop
               </Button>
               <Button variant="outline" className="border-[#b45309] text-[#b45309] hover:bg-[#b45309]/10 hover:text-[#b45309]" onClick={() => setMode("override")} data-testid="btn-hitl-override">
-                Override
+                Redirect
               </Button>
               <Button className="bg-[#15803d] text-black hover:bg-[#15803d]/80" onClick={handleApprove} data-testid="btn-hitl-approve">
                 <Check size={16} className="mr-2" /> Approve
@@ -131,7 +131,7 @@ export default function HITLModal() {
             <>
               <Button variant="ghost" onClick={() => setMode("view")} data-testid="btn-hitl-cancel-override">Cancel</Button>
               <Button className="bg-[#b45309] text-black hover:bg-[#b45309]/80" onClick={handleOverrideSubmit} disabled={!constraint} data-testid="btn-hitl-submit-override">
-                Submit Override
+                Apply Constraint
               </Button>
             </>
           )}

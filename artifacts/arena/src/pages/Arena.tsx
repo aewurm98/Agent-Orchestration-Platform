@@ -97,6 +97,7 @@ export default function Arena() {
   const [interTicks, setInterTicks] = useState(100);
   const [isHitl, setIsHitl] = useState(false);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const handleStart = async () => {
     try {
@@ -138,7 +139,7 @@ export default function Arena() {
   return (
     <div className="flex flex-col h-[100dvh] w-full p-3 gap-3 text-foreground overflow-hidden font-sans">
       <HITLModal />
-      <WorkflowLibrary />
+      <WorkflowLibrary open={libraryOpen} onOpenChange={setLibraryOpen} />
 
       {/* TOP BAR — white tile */}
       <header className="shrink-0 tile rounded-2xl px-4 h-[60px] flex items-center justify-between z-10 shadow-sm">
@@ -227,7 +228,7 @@ export default function Arena() {
             <Tooltip delayDuration={250}>
               <TooltipTrigger asChild>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[#6b6359] font-mono uppercase tracking-wider cursor-help">T=</span>
+                  <span className="text-[10px] text-[#6b6359] uppercase tracking-wider cursor-help">Ep. Length</span>
                   <input
                     type="number"
                     min={10}
@@ -245,12 +246,15 @@ export default function Arena() {
                 sideOffset={6}
                 className="max-w-[240px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
               >
-                Episode length — number of ticks per scenario before topology transfers in INTER mode.
+                Ticks per episode — how many simulation steps run before topology transfers in INTER mode.
               </TooltipContent>
             </Tooltip>
           )}
 
-          {/* Primary CTA — charcoal pill (matches "Start Free Trial") */}
+          {/* Divider between config and run controls */}
+          <div className="w-px h-6 bg-[#ebe5d6] mx-1" />
+
+          {/* Primary CTA */}
           <Button
             size="sm"
             className="h-9 px-5 text-xs font-semibold bg-[#14120e] text-[#f4f0e7] hover:bg-[#2a2620] rounded-lg shadow-none disabled:opacity-40"
@@ -258,7 +262,7 @@ export default function Arena() {
             disabled={isRunning}
             data-testid="btn-start"
           >
-            Start Free Trial
+            Run Evolution
           </Button>
 
           {/* Stop button — outlined danger */}
@@ -269,30 +273,33 @@ export default function Arena() {
               onClick={handleStop}
               data-testid="btn-stop"
             >
-              Stop
+              Stop Run
             </Button>
           )}
         </div>
 
-        <div className="flex items-center gap-5">
-          {/* Mode indicator badges */}
+        <div className="flex items-center gap-4">
+          {/* Mode indicator badges — shown while running */}
           {isRunning && (
-            <div className="flex items-center gap-2">
-              <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
-                boundaryMode === "INTER"
-                  ? "border-[#14120e]/20 text-[#14120e] bg-white"
-                  : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
-              }`}>
-                {boundaryMode}
-              </span>
-              <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
-                mutationStrategy === "LLM"
-                  ? "border-[#14120e]/20 text-[#14120e] bg-white"
-                  : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
-              }`}>
-                {mutationStrategy}
-              </span>
-            </div>
+            <>
+              <div className="flex items-center gap-2">
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
+                  boundaryMode === "INTER"
+                    ? "border-[#4F7CFF]/30 text-[#4F7CFF] bg-[#EEF3FF]"
+                    : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
+                }`}>
+                  {boundaryMode}
+                </span>
+                <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
+                  mutationStrategy === "LLM"
+                    ? "border-[#8B5CF6]/30 text-[#8B5CF6] bg-[#F5F3FF]"
+                    : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
+                }`}>
+                  {mutationStrategy}
+                </span>
+              </div>
+              <div className="w-px h-6 bg-[#ebe5d6]" />
+            </>
           )}
 
           <Tooltip delayDuration={250}>
@@ -408,9 +415,17 @@ export default function Arena() {
                 <TabsContent value="traces" className="m-0 h-full data-[state=inactive]:hidden">
                   <TracePanel />
                 </TabsContent>
-                <TabsContent value="library" className="m-0 h-full data-[state=inactive]:hidden p-6">
-                  <div className="text-[#6b6359] text-sm">
-                    Expand the library sidebar on the left to view and apply saved workflows.
+                <TabsContent value="library" className="m-0 h-full data-[state=inactive]:hidden">
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-4 p-8">
+                    <div className="text-[#6b6359] text-sm text-center leading-relaxed max-w-[240px]">
+                      Browse saved workflow topologies and load them into a new run.
+                    </div>
+                    <button
+                      onClick={() => setLibraryOpen(true)}
+                      className="h-9 px-5 text-xs font-semibold bg-[#14120e] text-[#f4f0e7] hover:bg-[#2a2620] rounded-lg transition-colors"
+                    >
+                      Open Workflow Library
+                    </button>
                   </div>
                 </TabsContent>
               </div>
@@ -419,11 +434,16 @@ export default function Arena() {
         ) : (
           <button
             onClick={() => setSidePanelOpen(true)}
-            className="tile rounded-2xl shadow-sm w-11 flex items-center justify-center text-[#6b6359] hover:text-[#14120e] hover:bg-[#efe9d9] transition-colors"
+            className="tile rounded-2xl shadow-sm w-11 flex flex-col items-center justify-center gap-3 py-4 text-[#6b6359] hover:text-[#14120e] hover:bg-[#efe9d9] transition-colors"
             aria-label="Expand side panel"
             data-testid="btn-expand-side"
           >
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-4 h-4 shrink-0" />
+            {["DAG", "Evo", "Traces", "Lib"].map((t) => (
+              <span key={t} className="text-[8px] font-semibold uppercase tracking-widest [writing-mode:vertical-rl] rotate-180 text-[#a89e8e]">
+                {t}
+              </span>
+            ))}
           </button>
         )}
       </main>

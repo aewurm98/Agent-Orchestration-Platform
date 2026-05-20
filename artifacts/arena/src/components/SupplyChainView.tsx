@@ -535,7 +535,7 @@ function ControlPanel({
               className="col-span-2 self-start text-[10px] font-medium text-[#6b6359] hover:text-[#14120e] underline underline-offset-2"
               data-testid="btn-clear-overrides"
             >
-              Hand back to EA
+              Reset to Auto
             </button>
           )}
         </div>

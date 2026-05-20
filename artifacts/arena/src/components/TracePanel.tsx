@@ -150,8 +150,12 @@ export default function TracePanel() {
           );
         })}
         {filteredTraces.length === 0 && (
-          <div className="text-center text-muted-foreground text-sm font-mono pt-8">
-            No traces captured yet…
+          <div className="flex flex-col items-center justify-center gap-3 pt-12">
+            <div className="w-9 h-9 rounded-xl bg-[#efe9d9] flex items-center justify-center text-[16px]">💬</div>
+            <p className="text-[12px] text-[#6b6359] font-mono">
+              {filter === "All" ? "No agent traces yet" : `No ${filter} traces`}
+            </p>
+            <p className="text-[11px] text-[#a89e8e]">Traces appear here as agents act</p>
           </div>
         )}
       </div>

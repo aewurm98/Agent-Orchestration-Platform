@@ -13,8 +13,15 @@ type Workflow = {
   created_at: string;
 };
 
-export default function WorkflowLibrary() {
-  const [expanded, setExpanded] = useState(false);
+type Props = { open?: boolean; onOpenChange?: (open: boolean) => void };
+
+export default function WorkflowLibrary({ open: controlledOpen, onOpenChange }: Props = {}) {
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = controlledOpen ?? internalExpanded;
+  const setExpanded = (v: boolean) => {
+    setInternalExpanded(v);
+    onOpenChange?.(v);
+  };
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [applyingId, setApplyingId] = useState<string | null>(null);
   const { evolutionData, gameState, isRunning, setIsRunning } = useSocket();
@@ -115,7 +122,7 @@ export default function WorkflowLibrary() {
           disabled={!gameState}
           data-testid="btn-save-current"
         >
-          <Save size={16} className="mr-2" /> Save Current State
+          <Save size={16} className="mr-2" /> Save Workflow
         </Button>
       </div>
 
@@ -149,7 +156,7 @@ export default function WorkflowLibrary() {
                 disabled={isRunning || applyingId === wf.id}
                 data-testid={`btn-apply-workflow-${wf.id}`}
               >
-                {applyingId === wf.id ? "Applying…" : "Apply to Current Scenario"}
+                {applyingId === wf.id ? "Loading…" : "Load & Run"}
               </Button>
             </div>
           ))}

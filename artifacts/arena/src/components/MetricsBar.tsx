@@ -5,9 +5,13 @@ export default function MetricsBar() {
   const { evolutionData, gameState, mfgState, socket } = useSocket();
 
   const latestFitness = evolutionData[evolutionData.length - 1] ?? null;
+  const prevFitness = evolutionData.length >= 2 ? evolutionData[evolutionData.length - 2] : null;
   const costPerTask = latestFitness?.cost_per_task ?? 0;
   const latencyMs = latestFitness ? latestFitness.latency * 1000 : 0;
   const bestFitness = latestFitness?.best_fitness ?? 0;
+  const prevBest = prevFitness?.best_fitness ?? bestFitness;
+  const fitnessDelta = bestFitness - prevBest;
+  const mutationType = latestFitness?.mutation_type ?? null;
   const tick = mfgState?.tick ?? gameState?.tick ?? 0;
   const scenario = mfgState?.scenario ?? gameState?.scenario ?? "None";
 
@@ -20,20 +24,24 @@ export default function MetricsBar() {
     <div className="w-full h-full flex flex-col px-6 py-5 gap-5" data-testid="container-metrics-bar">
       <div className="flex justify-between items-center">
         <h3 className="text-[11px] font-semibold text-[#6b6359] uppercase tracking-[0.18em]">Live Metrics</h3>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap justify-end">
           <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-[#efe9d9] text-[#6b6359]">
             Tick · {tick}
           </span>
           <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-white text-[#14120e]">
             {scenario}
           </span>
+          {mutationType && (
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-white text-[#6b6359]">
+              {mutationType}
+            </span>
+          )}
           <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium tile-dark">
             {runLabel}
           </span>
         </div>
       </div>
 
-      {/* Stat tiles — mirror the "50,000+" cards in the inspo */}
       <div className="grid grid-cols-3 gap-4 flex-1">
         <StatTile
           label="Cost / Task"
@@ -47,13 +55,22 @@ export default function MetricsBar() {
         />
         <div className="flex flex-col justify-between p-4 rounded-2xl border border-[#ebe5d6] bg-white relative">
           <div className="flex flex-col gap-1">
-            <span className="text-[11px] text-[#6b6359] uppercase tracking-wider">Pass@k</span>
-            <span className="text-2xl font-semibold tracking-tight text-[#14120e] tabular-nums" data-testid="metric-fitness">
-              {bestFitness}
-            </span>
+            <span className="text-[11px] text-[#6b6359] uppercase tracking-wider">Best Fitness</span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold tracking-tight text-[#14120e] tabular-nums" data-testid="metric-fitness">
+                {bestFitness}
+              </span>
+              {fitnessDelta !== 0 && (
+                <span
+                  className="text-[11px] font-mono font-semibold"
+                  style={{ color: fitnessDelta > 0 ? "#15803d" : "#b91c1c" }}
+                >
+                  {fitnessDelta > 0 ? "▲" : "▼"} {Math.abs(fitnessDelta).toFixed(2)}
+                </span>
+              )}
+            </div>
           </div>
           <Progress value={(bestFitness / 1000) * 100} className="h-1.5 bg-[#efe9d9]" />
-          {/* corner dot like the inspo */}
           <span className="absolute top-3 right-3 w-1.5 h-1.5 rounded-full bg-[#14120e]" />
         </div>
       </div>
