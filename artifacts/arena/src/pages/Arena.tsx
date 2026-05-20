@@ -224,19 +224,30 @@ export default function Arena() {
 
           {/* Episode length — only visible in INTER mode */}
           {boundaryMode === "INTER" && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-[#6b6359] font-mono uppercase tracking-wider">T=</span>
-              <input
-                type="number"
-                min={10}
-                max={500}
-                step={10}
-                value={interTicks}
-                onChange={(e) => setInterTicks(Math.max(10, Math.min(500, Number(e.target.value))))}
-                disabled={isRunning}
-                className="w-[60px] h-9 text-xs bg-white border border-[#ebe5d6] text-[#14120e] rounded-lg px-2 font-mono focus:outline-none focus:border-[#14120e] disabled:opacity-40"
-              />
-            </div>
+            <Tooltip delayDuration={250}>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-[#6b6359] font-mono uppercase tracking-wider cursor-help">T=</span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={500}
+                    step={10}
+                    value={interTicks}
+                    onChange={(e) => setInterTicks(Math.max(10, Math.min(500, Number(e.target.value))))}
+                    disabled={isRunning}
+                    className="w-[60px] h-9 text-xs bg-white border border-[#ebe5d6] text-[#14120e] rounded-lg px-2 font-mono focus:outline-none focus:border-[#14120e] disabled:opacity-40"
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent
+                side="bottom"
+                sideOffset={6}
+                className="max-w-[240px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
+              >
+                Episode length — number of ticks per scenario before topology transfers in INTER mode.
+              </TooltipContent>
+            </Tooltip>
           )}
 
           {/* Primary CTA — charcoal pill (matches "Start Free Trial") */}
@@ -284,26 +295,50 @@ export default function Arena() {
             </div>
           )}
 
-          <div className="flex items-center gap-2">
-            <Label htmlFor="mode-toggle" className="text-[11px] text-[#6b6359] uppercase tracking-wider">
-              {isHitl ? "HITL" : "Auto"}
-            </Label>
-            <Switch
-              id="mode-toggle"
-              checked={isHitl}
-              onCheckedChange={setIsHitl}
-              disabled={isRunning}
-              className="data-[state=checked]:bg-[#14120e]"
-            />
-          </div>
+          <Tooltip delayDuration={250}>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-2 cursor-help">
+                <Label htmlFor="mode-toggle" className="text-[11px] text-[#6b6359] uppercase tracking-wider cursor-help">
+                  {isHitl ? "HITL" : "Auto"}
+                </Label>
+                <Switch
+                  id="mode-toggle"
+                  checked={isHitl}
+                  onCheckedChange={setIsHitl}
+                  disabled={isRunning}
+                  className="data-[state=checked]:bg-[#14120e]"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side="bottom"
+              sideOffset={6}
+              className="max-w-[260px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
+            >
+              {isHitl
+                ? "Human-in-the-loop — the sim pauses for your approval at key decisions."
+                : "Autonomous — the EA runs continuously without human intervention."}
+            </TooltipContent>
+          </Tooltip>
 
-          {/* Generation counter — dark pill (matches "01 AI sorts" ring in inspo) */}
-          <div className="flex items-center gap-3 tile-dark rounded-full pl-3 pr-4 py-1.5">
-            <span className="text-[10px] uppercase tracking-widest text-[#f4f0e7]/60">Gen</span>
-            <span className="font-mono text-[#f4f0e7] font-bold text-base leading-none tabular-nums">
-              {currentGeneration.toString().padStart(4, "0")}
-            </span>
-          </div>
+          {/* Generation counter — dark pill */}
+          <Tooltip delayDuration={250}>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-3 tile-dark rounded-full pl-3 pr-4 py-1.5 cursor-help">
+                <span className="text-[10px] uppercase tracking-widest text-[#f4f0e7]/60">Gen</span>
+                <span className="font-mono text-[#f4f0e7] font-bold text-base leading-none tabular-nums">
+                  {currentGeneration.toString().padStart(4, "0")}
+                </span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side="bottom"
+              sideOffset={6}
+              className="max-w-[240px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
+            >
+              Generation count — how many evolutionary cycles have completed since the run started.
+            </TooltipContent>
+          </Tooltip>
         </div>
       </header>
 
