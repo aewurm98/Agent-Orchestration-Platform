@@ -142,8 +142,8 @@ export default function Arena() {
       <WorkflowLibrary open={libraryOpen} onOpenChange={setLibraryOpen} />
 
       {/* TOP BAR — white tile */}
-      <header className="shrink-0 tile rounded-2xl px-4 h-[60px] flex items-center justify-between z-10 shadow-sm">
-        <div className="flex items-center gap-3">
+      <header className="shrink-0 tile rounded-2xl px-5 h-[60px] flex items-center justify-between z-10 shadow-sm">
+        <div className="flex items-center gap-2">
           {/* Brand: pixel-gradient dot + wordmark */}
           <div className="flex items-center gap-2.5 mr-2">
             <div className="w-8 h-8 rounded-lg overflow-hidden pixel-gradient" aria-hidden="true" />
@@ -251,34 +251,35 @@ export default function Arena() {
             </Tooltip>
           )}
 
-          {/* Divider between config and run controls */}
-          <div className="w-px h-6 bg-[#ebe5d6] mx-1" />
+          {/* Divider between config selectors and run controls */}
+          <div className="w-px h-5 bg-[#ebe5d6] mx-2" />
 
-          {/* Primary CTA */}
-          <Button
-            size="sm"
-            className="h-9 px-5 text-xs font-semibold bg-[#14120e] text-[#f4f0e7] hover:bg-[#2a2620] rounded-lg shadow-none disabled:opacity-40"
-            onClick={handleStart}
-            disabled={isRunning}
-            data-testid="btn-start"
-          >
-            Run Evolution
-          </Button>
-
-          {/* Stop button — outlined danger */}
-          {isRunning && (
+          {/* Run controls — given their own flex group for consistent spacing */}
+          <div className="flex items-center gap-2.5">
             <Button
               size="sm"
-              className="h-9 px-5 text-xs font-semibold bg-white text-[#b91c1c] border border-[#b91c1c]/30 hover:bg-[#b91c1c]/5 rounded-lg shadow-none"
-              onClick={handleStop}
-              data-testid="btn-stop"
+              className="h-9 px-5 text-xs font-semibold bg-[#14120e] text-[#f4f0e7] hover:bg-[#2a2620] rounded-lg shadow-none disabled:opacity-40"
+              onClick={handleStart}
+              disabled={isRunning}
+              data-testid="btn-start"
             >
-              Stop Run
+              Run Evolution
             </Button>
-          )}
+
+            {isRunning && (
+              <Button
+                size="sm"
+                className="h-9 px-5 text-xs font-semibold bg-white text-[#b91c1c] border border-[#b91c1c]/30 hover:bg-[#b91c1c]/5 rounded-lg shadow-none"
+                onClick={handleStop}
+                data-testid="btn-stop"
+              >
+                Stop Run
+              </Button>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {/* Mode indicator badges — shown while running */}
           {isRunning && (
             <>
