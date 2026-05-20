@@ -4,8 +4,81 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSocket } from "@/hooks/useSocket";
+
+// ── Option metadata ─────────────────────────────────────────────────────────
+
+const SCENARIOS = [
+  {
+    value: "Supply Chain",
+    label: "Supply Chain",
+    desc: "Supplier → Warehouses → Distributor → Retail shelves. EA learns to meet customer demand without stockouts.",
+  },
+  {
+    value: "Disaster Relief",
+    label: "Disaster Relief",
+    desc: "Grid-based emergency response. Agents allocate scarce resources to incidents across a map.",
+  },
+  {
+    value: "Peer Agents",
+    label: "Peer Agents",
+    desc: "Agent-to-agent negotiation. Two peers bargain over a contested resource.",
+  },
+  {
+    value: "Manufacturing",
+    label: "Manufacturing",
+    desc: "10×10 factory floor with 6 machine types and 5 agent roles. Flagship VC-demo scenario.",
+  },
+] as const;
+
+const BOUNDARY_MODES = [
+  {
+    value: "INTRA" as const,
+    label: "INTRA",
+    desc: "Single environment, continuous evolution within one scenario. Best for tuning a single workflow.",
+  },
+  {
+    value: "INTER" as const,
+    label: "INTER",
+    desc: "Cross-environment evolution. Topology transfers between scenario resets — tests generalisation.",
+  },
+];
+
+const MUTATION_STRATEGIES = [
+  {
+    value: "MATH" as const,
+    label: "MATH",
+    desc: "Deterministic genome mutation via formulas. Fast, cheap, reproducible. Default.",
+  },
+  {
+    value: "LLM" as const,
+    label: "LLM",
+    desc: "An LLM proposes mutations using reasoning. Requires ANTHROPIC_API_KEY and INTER mode.",
+  },
+];
+
+const TAB_INFO: Record<string, string> = {
+  DAG: "Topology of agent ↔ tool connections. Click a node to inspect its tools, recent actions, and system prompt.",
+  Evolution: "Fitness curve over generations + recent evolutionary history. Tracks genome improvements.",
+  Traces: "Live agent thought stream — each agent's reasoning as it acts. Streams as the simulation runs.",
+  Library: "Saved workflows from past runs. Apply a known-good topology to a new run.",
+};
+
+// Renders a dropdown row: short label + small description below.
+function OptionRow({ label, desc, mono }: { label: string; desc: string; mono?: boolean }) {
+  return (
+    <div className="flex flex-col gap-0.5 py-0.5 max-w-[280px]">
+      <span className={`text-[12px] font-semibold text-[#14120e] ${mono ? "font-mono" : ""}`}>
+        {label}
+      </span>
+      <span className="text-[10px] text-[#6b6359] leading-snug whitespace-normal">
+        {desc}
+      </span>
+    </div>
+  );
+}
 
 import GameViewport from "@/components/GameViewport";
 import MetricsBar from "@/components/MetricsBar";
@@ -78,19 +151,20 @@ export default function Arena() {
             </span>
           </div>
 
-          {/* Scenario selector */}
+          {/* Scenario selector — compact trigger, rich dropdown */}
           <Select value={scenario} onValueChange={handleScenarioChange} disabled={isRunning}>
             <SelectTrigger
               className={`w-[160px] ${selectTriggerClass}`}
               data-testid="select-scenario"
             >
-              <SelectValue placeholder="Scenario" />
+              <SelectValue placeholder="Scenario">{scenario}</SelectValue>
             </SelectTrigger>
             <SelectContent className={selectContentClass}>
-              <SelectItem value="Supply Chain">Supply Chain</SelectItem>
-              <SelectItem value="Disaster Relief">Disaster Relief</SelectItem>
-              <SelectItem value="Peer Agents">Peer Agents</SelectItem>
-              <SelectItem value="Manufacturing">Manufacturing</SelectItem>
+              {SCENARIOS.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  <OptionRow label={s.label} desc={s.desc} />
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
@@ -108,15 +182,16 @@ export default function Arena() {
               className={`w-[110px] ${selectTriggerClass}`}
               data-testid="select-boundary-mode"
             >
-              <SelectValue placeholder="Boundary" />
+              <SelectValue placeholder="Boundary">
+                <span className="font-mono">{boundaryMode}</span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent className={selectContentClass}>
-              <SelectItem value="INTRA">
-                <span className="font-mono">INTRA</span>
-              </SelectItem>
-              <SelectItem value="INTER">
-                <span className="font-mono">INTER</span>
-              </SelectItem>
+              {BOUNDARY_MODES.map((b) => (
+                <SelectItem key={b.value} value={b.value}>
+                  <OptionRow label={b.label} desc={b.desc} mono />
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
@@ -130,15 +205,20 @@ export default function Arena() {
               className={`w-[100px] ${selectTriggerClass}`}
               data-testid="select-mutation-strategy"
             >
-              <SelectValue placeholder="Mutate" />
+              <SelectValue placeholder="Mutate">
+                <span className="font-mono">{mutationStrategy}</span>
+              </SelectValue>
             </SelectTrigger>
             <SelectContent className={selectContentClass}>
-              <SelectItem value="MATH">
-                <span className="font-mono">MATH</span>
-              </SelectItem>
-              <SelectItem value="LLM" disabled={boundaryMode === "INTRA"}>
-                <span className="font-mono">LLM</span>
-              </SelectItem>
+              {MUTATION_STRATEGIES.map((m) => (
+                <SelectItem
+                  key={m.value}
+                  value={m.value}
+                  disabled={m.value === "LLM" && boundaryMode === "INTRA"}
+                >
+                  <OptionRow label={m.label} desc={m.desc} mono />
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
@@ -262,13 +342,23 @@ export default function Arena() {
               <div className="px-3 pt-3 pr-12 shrink-0 border-b border-[#ebe5d6]">
                 <TabsList className="bg-transparent border-none gap-1 p-0 h-auto">
                   {["DAG", "Evolution", "Traces", "Library"].map((tab) => (
-                    <TabsTrigger
-                      key={tab}
-                      value={tab.toLowerCase()}
-                      className="data-[state=active]:bg-[#14120e] data-[state=active]:text-[#f4f0e7] data-[state=inactive]:text-[#6b6359] data-[state=inactive]:hover:text-[#14120e] data-[state=inactive]:hover:bg-[#efe9d9] rounded-full px-3.5 py-1.5 text-xs font-medium tracking-wide transition-colors mb-2"
-                    >
-                      {tab}
-                    </TabsTrigger>
+                    <Tooltip key={tab} delayDuration={250}>
+                      <TooltipTrigger asChild>
+                        <TabsTrigger
+                          value={tab.toLowerCase()}
+                          className="data-[state=active]:bg-[#14120e] data-[state=active]:text-[#f4f0e7] data-[state=inactive]:text-[#6b6359] data-[state=inactive]:hover:text-[#14120e] data-[state=inactive]:hover:bg-[#efe9d9] rounded-full px-3.5 py-1.5 text-xs font-medium tracking-wide transition-colors mb-2"
+                        >
+                          {tab}
+                        </TabsTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="bottom"
+                        sideOffset={6}
+                        className="max-w-[260px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
+                      >
+                        {TAB_INFO[tab]}
+                      </TooltipContent>
+                    </Tooltip>
                   ))}
                 </TabsList>
               </div>
