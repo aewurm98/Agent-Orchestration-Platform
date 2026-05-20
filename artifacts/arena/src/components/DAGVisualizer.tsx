@@ -19,10 +19,10 @@ type NodeStatus = DagNode["status"];
 
 function getBorderColor(status: NodeStatus): string {
   switch (status) {
-    case "active":  return "#00d9ff";
-    case "failed":  return "#f87171";
-    case "evolved": return "#f59e0b";
-    default:        return "#30363d";
+    case "active":  return "#14120e";
+    case "failed":  return "#b91c1c";
+    case "evolved": return "#b45309";
+    default:        return "#ebe5d6";
   }
 }
 
@@ -32,16 +32,16 @@ function CustomNode({ data }: NodeProps<DagNode>) {
 
   return (
     <div
-      className={`rounded-full flex items-center justify-center bg-[#161b22] border-[3px] text-xs font-mono text-center overflow-hidden transition-all duration-300 ${isActive ? "node-active-pulse" : ""}`}
+      className={`rounded-full flex items-center justify-center bg-[#ffffff] border-[3px] text-xs font-mono text-center overflow-hidden transition-all duration-300 ${isActive ? "node-active-pulse" : ""}`}
       style={{
         width: `${size}px`,
         height: `${size}px`,
         borderColor: getBorderColor(data.status),
-        boxShadow: isActive ? "0 0 12px 4px rgba(0, 217, 255, 0.2)" : "none",
+        boxShadow: isActive ? "0 0 12px 4px rgba(20, 18, 14, 0.25)" : "none",
       }}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
-      <span className="max-w-full truncate px-2 text-[#e6edf3]">{data.label}</span>
+      <span className="max-w-full truncate px-2 text-[#14120e]">{data.label}</span>
       <Handle type="source" position={Position.Bottom} className="opacity-0" />
     </div>
   );
@@ -80,11 +80,11 @@ export default function DAGVisualizer() {
       animated: true,
       style: {
         strokeWidth: Math.max(1, (e.payload_size || 100) / 100),
-        stroke: e.grpo_score < 0 ? "#f87171" : "#00d9ff",
+        stroke: e.grpo_score < 0 ? "#b91c1c" : "#14120e",
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: e.grpo_score < 0 ? "#f87171" : "#00d9ff",
+        color: e.grpo_score < 0 ? "#b91c1c" : "#14120e",
       },
     }));
 
@@ -92,7 +92,7 @@ export default function DAGVisualizer() {
   }, [dagData]);
 
   return (
-    <div className="w-full h-full relative bg-[#0d1117]" data-testid="dag-visualizer">
+    <div className="w-full h-full relative bg-transparent" data-testid="dag-visualizer">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -100,14 +100,14 @@ export default function DAGVisualizer() {
         fitView
         onNodeClick={(_, node) => setSelectedNode(node.data as DagNode)}
       >
-        <Background color="#30363d" gap={16} />
-        <Controls className="fill-[#e6edf3] bg-[#161b22] border-[#30363d]" />
+        <Background color="rgba(20, 18, 14, 0.18)" gap={16} />
+        <Controls className="fill-[#14120e] bg-[#ffffff] border-[#ebe5d6]" />
       </ReactFlow>
 
       {selectedNode && (
-        <Card className="absolute top-4 right-4 w-72 bg-[#161b22]/95 backdrop-blur border-[#30363d] p-4 flex flex-col gap-3 shadow-xl overflow-y-auto max-h-[calc(100%-2rem)]">
-          <div className="flex justify-between items-center border-b border-[#30363d] pb-2">
-            <h3 className="font-mono text-sm text-[#00d9ff]">{selectedNode.label}</h3>
+        <Card className="absolute top-4 right-4 w-72 bg-[#ffffff]/95 backdrop-blur border-[#ebe5d6] p-4 flex flex-col gap-3 shadow-xl overflow-y-auto max-h-[calc(100%-2rem)]">
+          <div className="flex justify-between items-center border-b border-[#ebe5d6] pb-2">
+            <h3 className="font-mono text-sm text-[#14120e]">{selectedNode.label}</h3>
             <button
               onClick={() => setSelectedNode(null)}
               className="text-muted-foreground hover:text-foreground text-xs"
@@ -123,14 +123,14 @@ export default function DAGVisualizer() {
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Status</span>
               <Badge
                 variant="outline"
-                className={`w-fit text-xs ${selectedNode.status === "active" ? "border-[#00d9ff] text-[#00d9ff]" : selectedNode.status === "evolved" ? "border-[#f59e0b] text-[#f59e0b]" : "border-[#30363d]"}`}
+                className={`w-fit text-xs ${selectedNode.status === "active" ? "border-[#14120e] text-[#14120e]" : selectedNode.status === "evolved" ? "border-[#b45309] text-[#b45309]" : "border-[#ebe5d6]"}`}
               >
                 {selectedNode.status}
               </Badge>
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Ctx Util</span>
-              <span className="text-xs font-mono text-[#e6edf3]">
+              <span className="text-xs font-mono text-[#14120e]">
                 {(selectedNode.ctx_util * 100).toFixed(1)}%
               </span>
             </div>
@@ -145,7 +145,7 @@ export default function DAGVisualizer() {
                   <Badge
                     key={tool}
                     variant="outline"
-                    className="text-[9px] font-mono border-[#30363d] text-[#8b949e] px-1.5 py-0.5"
+                    className="text-[9px] font-mono border-[#ebe5d6] text-[#6b6359] px-1.5 py-0.5"
                   >
                     {tool}
                   </Badge>
@@ -164,7 +164,7 @@ export default function DAGVisualizer() {
                 selectedNode.last_actions.map((action, idx) => (
                   <div
                     key={idx}
-                    className="text-[10px] font-mono bg-[#0d1117] px-2 py-1 rounded border border-[#30363d] text-[#8b949e] truncate"
+                    className="text-[10px] font-mono bg-[#f4f0e7] px-2 py-1 rounded border border-[#ebe5d6] text-[#6b6359] truncate"
                     title={action}
                   >
                     {action}
@@ -179,7 +179,7 @@ export default function DAGVisualizer() {
           {/* System Prompt */}
           <div className="flex flex-col gap-1">
             <span className="text-[10px] text-muted-foreground uppercase tracking-wider">System Prompt</span>
-            <div className="text-[10px] font-mono bg-[#0d1117] p-2 rounded border border-[#30363d] text-[#8b949e] leading-relaxed">
+            <div className="text-[10px] font-mono bg-[#f4f0e7] p-2 rounded border border-[#ebe5d6] text-[#6b6359] leading-relaxed">
               {selectedNode.system_prompt || "—"}
             </div>
           </div>

@@ -8,6 +8,13 @@ export type GameAgent = {
   role: string;
   inventory: number;
   state: string;
+  // Retailer-only fields (present when role === "retailer")
+  delivered?: number;
+  demand?: number;
+  last_demand?: number;
+  last_sold?: number;
+  stockout?: boolean;
+  capacity?: number;
 };
 
 export type GameState = {
@@ -25,6 +32,15 @@ export type GameState = {
     finished_output?: number;
     approved_finished?: number;
     total_processed?: number;
+    // Supply chain extras
+    supply_rate?: number;
+    demand_base?: number;
+    transfer_amount?: number;
+    customers_served?: number;
+    service_level?: number;
+    stockout_ticks?: number;
+    supply_override?: boolean;
+    demand_override?: boolean;
   };
   score: number;
   tick: number;
@@ -225,6 +241,7 @@ type SocketContextType = {
   emitScenarioSelect: (scenario: string) => void;
   emitStartEvolution: () => void;
   emitMfgAction: (agentId: string, actionType: string, params?: Record<string, unknown>) => void;
+  emitSupplyChainKnobs: (knobs: { supply_rate?: number | null; retail_demand_base?: number | null }) => void;
   setIsRunning: (running: boolean) => void;
   clearHitlRequest: () => void;
   clearSessionState: () => void;
@@ -362,6 +379,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     [socket]
   );
 
+  const emitSupplyChainKnobs = useCallback(
+    (knobs: { supply_rate?: number | null; retail_demand_base?: number | null }) => {
+      if (socket) socket.emit("set_supply_chain_knobs", knobs);
+    },
+    [socket]
+  );
+
   const clearHitlRequest = useCallback(() => setHitlRequest(null), []);
 
   return (
@@ -382,6 +406,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         emitScenarioSelect,
         emitStartEvolution,
         emitMfgAction,
+        emitSupplyChainKnobs,
         setIsRunning,
         clearHitlRequest,
         clearSessionState,

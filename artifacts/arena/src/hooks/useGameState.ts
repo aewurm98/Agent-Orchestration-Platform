@@ -6,15 +6,15 @@ export function useGameState() {
   const getRoleColor = (role: string) => {
     switch (role.toLowerCase()) {
       case "warehouse":
-        return "#00d9ff"; // cyan
+        return "#14120e"; // cyan
       case "distributor":
-        return "#f59e0b"; // amber
+        return "#b45309"; // amber
       case "retailer":
-        return "#7ee787"; // green
+        return "#15803d"; // green
       case "supplier":
-        return "#ff6b6b"; // red
+        return "#dc2626"; // red
       default:
-        return "#e6edf3"; // text primary
+        return "#14120e"; // text primary
     }
   };
 

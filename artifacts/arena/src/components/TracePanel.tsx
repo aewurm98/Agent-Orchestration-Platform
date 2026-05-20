@@ -3,23 +3,23 @@ import { useSocket } from "@/hooks/useSocket";
 import { Button } from "@/components/ui/button";
 
 const ROLE_COLORS: Record<string, string> = {
-  orchestrator:           "#00d9ff",
-  evaluator:              "#f59e0b",
-  supply_agent:           "#7ee787",
-  demand_agent:           "#7ee787",
-  worker_1:               "#7ee787",
-  worker_2:               "#7ee787",
-  rescuer:                "#7ee787",
-  coordinator:            "#7ee787",
-  worker:                 "#7ee787",
-  planner:                "#c084fc",
-  system:                 "#8b949e",
+  orchestrator:           "#14120e",
+  evaluator:              "#b45309",
+  supply_agent:           "#15803d",
+  demand_agent:           "#15803d",
+  worker_1:               "#15803d",
+  worker_2:               "#15803d",
+  rescuer:                "#15803d",
+  coordinator:            "#15803d",
+  worker:                 "#15803d",
+  planner:                "#9333ea",
+  system:                 "#6b6359",
 };
 
 const STAGE_BADGE_COLORS: Record<string, string> = {
-  raw_materials:    "#fbbf24",
-  intermediates:    "#34d399",
-  finished_product: "#60a5fa",
+  raw_materials:    "#b45309",
+  intermediates:    "#10b981",
+  finished_product: "#1d4ed8",
 };
 
 type FilterKey = "All" | "Orchestrator" | "Evaluator" | "Game Agents" | "System";
@@ -62,8 +62,8 @@ export default function TracePanel() {
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0d1117]" data-testid="trace-panel">
-      <div className="flex p-2 gap-1 border-b border-[#30363d] bg-[#161b22] overflow-x-auto shrink-0">
+    <div className="w-full h-full flex flex-col bg-transparent" data-testid="trace-panel">
+      <div className="flex p-2 gap-1 border-b border-[#ebe5d6] bg-[#efe9d9] overflow-x-auto shrink-0">
         {FILTERS.map((f) => (
           <Button
             key={f}
@@ -72,8 +72,8 @@ export default function TracePanel() {
             onClick={() => setFilter(f)}
             className={`text-xs h-7 rounded-full whitespace-nowrap ${
               filter === f
-                ? "bg-[#30363d] text-white"
-                : "text-muted-foreground hover:bg-[#30363d]/50"
+                ? "bg-[#14120e] text-white hover:bg-[#2a2620]"
+                : "text-[#6b6359] hover:bg-[#faf6ed]"
             }`}
             data-testid={`filter-trace-${f.toLowerCase().replace(/\s+/g, "-")}`}
           >
@@ -86,54 +86,54 @@ export default function TracePanel() {
         {filteredTraces.map((trace, i) => {
           const isLast = i === filteredTraces.length - 1;
           const isExpanded = expandedIndices.has(i);
-          const color = ROLE_COLORS[trace.role] ?? "#e6edf3";
-          const stageColor = trace.stage ? STAGE_BADGE_COLORS[trace.stage] ?? "#8b949e" : null;
+          const color = ROLE_COLORS[trace.role] ?? "#14120e";
+          const stageColor = trace.stage ? STAGE_BADGE_COLORS[trace.stage] ?? "#6b6359" : null;
 
           return (
             <div
               key={`${trace.timestamp}-${i}`}
-              className="text-sm font-mono border-l-2 pl-3 py-1 cursor-pointer transition-colors hover:bg-[#161b22]"
+              className="text-sm font-mono border-l-2 pl-3 py-1 cursor-pointer transition-colors hover:bg-[#faf6ed] rounded-r-md"
               style={{ borderLeftColor: color }}
               onClick={() => toggleExpand(i)}
             >
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span
-                  className="text-[10px] px-1.5 py-0.5 rounded bg-[#161b22] border border-[#30363d] uppercase"
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-[#ffffff] border border-[#ebe5d6] uppercase"
                   style={{ color }}
                 >
                   {trace.agent_role ?? trace.role}
                 </span>
                 {trace.agent_name && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#161b22] border border-[#30363d] text-[#8b949e]">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#ffffff] border border-[#ebe5d6] text-[#6b6359]">
                     {trace.agent_name}
                   </span>
                 )}
                 {trace.stage && stageColor && (
                   <span
-                    className="text-[10px] px-1.5 py-0.5 rounded border border-[#30363d]"
-                    style={{ color: stageColor, backgroundColor: "#161b22" }}
+                    className="text-[10px] px-1.5 py-0.5 rounded border border-[#ebe5d6]"
+                    style={{ color: stageColor, backgroundColor: "#ffffff" }}
                   >
                     {trace.stage.replace(/_/g, " ")}
                   </span>
                 )}
                 {trace.action && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1f2937] text-[#a3e635] border border-[#30363d]">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#15803d]/15 text-[#15803d] border border-[#15803d]/30">
                     {trace.action}
                   </span>
                 )}
-                <span className="text-[10px] text-[#8b949e]">
+                <span className="text-[10px] text-[#6b6359]">
                   {new Date(trace.timestamp * 1000).toLocaleTimeString()}
                 </span>
               </div>
 
               {trace.reasoning && (
-                <div className="text-[11px] text-[#8b949e] italic mb-1 truncate">
+                <div className="text-[11px] text-[#6b6359] italic mb-1 truncate">
                   {trace.reasoning}
                 </div>
               )}
 
               <div
-                className={`text-[#e6edf3] ${isExpanded ? "whitespace-pre-wrap" : "truncate"} ${
+                className={`text-[#14120e] ${isExpanded ? "whitespace-pre-wrap" : "truncate"} ${
                   isLast ? "cursor-blink" : ""
                 }`}
               >
@@ -141,8 +141,8 @@ export default function TracePanel() {
               </div>
 
               {isExpanded && trace.parameters && Object.keys(trace.parameters).length > 0 && (
-                <div className="mt-1 text-[10px] text-[#8b949e] bg-[#161b22] rounded p-1">
-                  <span className="text-[#30363d]">params: </span>
+                <div className="mt-1 text-[10px] text-[#6b6359] bg-[#faf6ed] border border-[#ebe5d6] rounded p-1.5">
+                  <span className="text-[#8b8378]">params: </span>
                   {JSON.stringify(trace.parameters)}
                 </div>
               )}

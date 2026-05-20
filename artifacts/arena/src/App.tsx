@@ -5,7 +5,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Arena from "@/pages/Arena";
 import { SocketProvider } from "@/context/SocketContext";
-import { useEffect } from "react";
 
 const queryClient = new QueryClient();
 
@@ -19,10 +18,6 @@ function Router() {
 }
 
 function App() {
-  useEffect(() => {
-    document.documentElement.classList.add("dark");
-  }, []);
-
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

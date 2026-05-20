@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useGameState } from "@/hooks/useGameState";
 import { useSocket } from "@/hooks/useSocket";
 import ManufacturingView from "@/components/ManufacturingView";
+import SupplyChainView from "@/components/SupplyChainView";
 import type { GameAgent } from "@/context/SocketContext";
 
 const ROLE_EMOJI: Record<string, string> = {
@@ -12,20 +13,41 @@ const ROLE_EMOJI: Record<string, string> = {
 };
 
 const ROLE_COLOR: Record<string, string> = {
-  supplier:    "#ff6b6b",
-  warehouse:   "#00d9ff",
-  distributor: "#f59e0b",
-  retailer:    "#7ee787",
+  supplier:    "#b91c1c",
+  warehouse:   "#14120e",
+  distributor: "#b45309",
+  retailer:    "#15803d",
 };
 
-const FLOW_ROUTES: Array<[string, string, string]> = [
-  ["supplier",    "warehouse",   "#ff6b6b"],
-  ["warehouse",   "distributor", "#00d9ff"],
-  ["distributor", "retailer",    "#f59e0b"],
+const ROLE_TINT: Record<string, string> = {
+  supplier:    "#fbeaea",
+  warehouse:   "#efe9d9",
+  distributor: "#fdf2dd",
+  retailer:    "#e6f4ea",
+};
+
+const FLOW_ROUTES: Array<[string, string]> = [
+  ["supplier",    "warehouse"],
+  ["warehouse",   "distributor"],
+  ["distributor", "retailer"],
 ];
 
 function roleColor(role: string): string {
-  return ROLE_COLOR[role.toLowerCase()] ?? "#e6edf3";
+  return ROLE_COLOR[role.toLowerCase()] ?? "#14120e";
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number, r: number,
+) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x,     y + h, radius);
+  ctx.arcTo(x,     y + h, x,     y,     radius);
+  ctx.arcTo(x,     y,     x + w, y,     radius);
+  ctx.closePath();
 }
 
 function drawFlowLines(
@@ -35,16 +57,24 @@ function drawFlowLines(
   cellH: number,
 ) {
   const byRole = (role: string) => agents.filter((a) => a.role === role);
-  for (const [srcRole, tgtRole, color] of FLOW_ROUTES) {
+  for (const [srcRole, tgtRole] of FLOW_ROUTES) {
     for (const src of byRole(srcRole)) {
       for (const tgt of byRole(tgtRole)) {
+        const x1 = src.x * cellW + cellW / 2;
+        const y1 = src.y * cellH + cellH / 2;
+        const x2 = tgt.x * cellW + cellW / 2;
+        const y2 = tgt.y * cellH + cellH / 2;
+        // Gentle curved bow between source and target
+        const mx = (x1 + x2) / 2;
+        const my = (y1 + y2) / 2 - Math.abs(x2 - x1) * 0.08;
+
         ctx.save();
-        ctx.strokeStyle = color + "33";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 6]);
+        ctx.strokeStyle = "rgba(20, 18, 14, 0.18)";
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash([3, 5]);
         ctx.beginPath();
-        ctx.moveTo(src.x * cellW + cellW / 2, src.y * cellH + cellH / 2);
-        ctx.lineTo(tgt.x * cellW + cellW / 2, tgt.y * cellH + cellH / 2);
+        ctx.moveTo(x1, y1);
+        ctx.quadraticCurveTo(mx, my, x2, y2);
         ctx.stroke();
         ctx.restore();
       }
@@ -60,42 +90,153 @@ function drawAgent(
 ) {
   const cx   = agent.x * cellW + cellW / 2;
   const cy   = agent.y * cellH + cellH / 2;
-  const half = Math.min(cellW, cellH) * 0.38;
+  // Slightly larger card — easier to see than before
+  const cardW = Math.min(cellW * 1.5, 78);
+  const cardH = Math.min(cellH * 1.5, 78);
+  const x = cx - cardW / 2;
+  const y = cy - cardH / 2;
   const color = roleColor(agent.role);
+  const tint = ROLE_TINT[agent.role.toLowerCase()] ?? "#efe9d9";
   const emoji = ROLE_EMOJI[agent.role.toLowerCase()] ?? "?";
-  const isActive = agent.state === "delivering" || agent.state === "generating";
+  const isActive =
+    agent.state === "delivering" ||
+    agent.state === "fetching" ||
+    agent.state === "generating";
 
+  // Active glow ring
   if (isActive) {
     ctx.save();
     ctx.shadowColor = color;
-    ctx.shadowBlur = 10;
-    ctx.strokeStyle = color + "88";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(cx - half - 3, cy - half - 3, (half + 3) * 2, (half + 3) * 2);
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, x - 2, y - 2, cardW + 4, cardH + 4, 12);
+    ctx.stroke();
     ctx.restore();
   }
 
-  ctx.fillStyle = color + "22";
-  ctx.fillRect(cx - half, cy - half, half * 2, half * 2);
+  // Card body
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x, y, cardW, cardH, 10);
+  ctx.fill();
+
+  // Tinted top stripe (role accent)
+  ctx.save();
+  ctx.fillStyle = tint;
+  roundRect(ctx, x, y, cardW, cardH * 0.42, 10);
+  ctx.fill();
+  // Re-clip bottom of top-stripe so only the rounded top tints
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x, y + cardH * 0.42 - 1, cardW, 2);
+  ctx.restore();
+
+  // Card border
   ctx.strokeStyle = color;
-  ctx.lineWidth = isActive ? 2 : 1;
-  ctx.strokeRect(cx - half, cy - half, half * 2, half * 2);
+  ctx.lineWidth = isActive ? 1.5 : 1;
+  roundRect(ctx, x, y, cardW, cardH, 10);
+  ctx.stroke();
 
-  ctx.font = `${Math.max(12, half * 0.85)}px serif`;
+  // Emoji — larger than before
+  ctx.font = `${Math.max(20, cardW * 0.36)}px "Apple Color Emoji", "Segoe UI Emoji", serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(emoji, cx, cy - half * 0.12);
+  ctx.fillText(emoji, cx, y + cardH * 0.30);
 
-  ctx.fillStyle = color;
-  ctx.font = `bold ${Math.max(7, half * 0.42)}px monospace`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  // Retailers: show cumulative delivered count (more meaningful than draining inventory)
+  // Value (inventory or delivered for retailers)
   const displayCount =
     agent.role === "retailer" && (agent as any).delivered != null
       ? (agent as any).delivered
       : agent.inventory;
-  ctx.fillText(String(displayCount), cx, cy + half * 0.52);
+  ctx.fillStyle = color;
+  ctx.font = `bold ${Math.max(11, cardW * 0.18)}px 'JetBrains Mono', monospace`;
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(displayCount), cx, y + cardH * 0.68);
+
+  // Role label (very small, under value)
+  ctx.fillStyle = "#6b6359";
+  ctx.font = `${Math.max(8, cardW * 0.11)}px 'JetBrains Mono', monospace`;
+  ctx.fillText(
+    agent.role.toUpperCase(),
+    cx,
+    y + cardH * 0.86,
+  );
+}
+
+function drawHudCard(
+  ctx: CanvasRenderingContext2D,
+  scenario: string,
+  score: number,
+  tick: number,
+) {
+  const x = 10, y = 10, w = 200, h = 50;
+  ctx.save();
+  // Card body — white with warm border
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#ebe5d6";
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.stroke();
+
+  // Scenario label
+  ctx.fillStyle = "#6b6359";
+  ctx.font = "600 9px 'Inter', system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(scenario.replace(/_/g, " ").toUpperCase(), x + 12, y + 8);
+
+  // Score + tick
+  ctx.fillStyle = "#14120e";
+  ctx.font = "bold 14px 'JetBrains Mono', monospace";
+  ctx.fillText(`Tick ${tick}`, x + 12, y + 22);
+  ctx.fillStyle = "#b45309";
+  ctx.fillText(`Score ${score.toFixed(2)}`, x + 92, y + 22);
+  ctx.restore();
+}
+
+function drawLegend(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+) {
+  const entries: [string, string, string][] = [
+    ["🏭", "Supplier",    "#b91c1c"],
+    ["🏪", "Warehouse",   "#14120e"],
+    ["🚚", "Distributor", "#b45309"],
+    ["🛒", "Retailer",    "#15803d"],
+  ];
+  const w = 116, lineH = 18, pad = 8;
+  const h = entries.length * lineH + pad * 2;
+  const x = width - w - 10;
+  const y = 10;
+
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#ebe5d6";
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.stroke();
+
+  entries.forEach(([icon, label, color], i) => {
+    const ly = y + pad + i * lineH + lineH / 2;
+    // colored dot
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x + pad + 3, ly, 3, 0, Math.PI * 2);
+    ctx.fill();
+    // emoji
+    ctx.font = "12px 'Apple Color Emoji', 'Segoe UI Emoji', serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(icon, x + pad + 12, ly);
+    // label
+    ctx.fillStyle = "#14120e";
+    ctx.font = "11px 'Inter', system-ui, sans-serif";
+    ctx.fillText(label, x + pad + 30, ly);
+  });
+  ctx.restore();
 }
 
 function drawResourcePanel(
@@ -106,40 +247,60 @@ function drawResourcePanel(
   panelH: number,
 ) {
   const panelY = height - panelH;
-  ctx.fillStyle = "rgba(13, 17, 23, 0.92)";
+  const pad = 8;
+  // Outer cream strip with top divider
+  ctx.fillStyle = "#faf6ed";
   ctx.fillRect(0, panelY, width, panelH);
-  ctx.strokeStyle = "#30363d";
+  ctx.strokeStyle = "#ebe5d6";
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(0, panelY); ctx.lineTo(width, panelY); ctx.stroke();
 
   const metrics: [string, number, number, string][] = [
-    ["STOCK",     resources.stock_level      ?? 0, 2000,  "#00d9ff"],
-    ["DEMAND",    resources.demand_queue     ?? 0, 500,   "#f59e0b"],
-    ["BACKLOG",   resources.backlog          ?? 0, 500,   "#f87171"],
-    ["DELIVERED", resources.total_delivered  ?? 0, 2000,  "#7ee787"],
+    ["STOCK",     resources.stock_level      ?? 0, 2000, "#14120e"],
+    ["DEMAND",    resources.demand_queue     ?? 0, 500,  "#b45309"],
+    ["BACKLOG",   resources.backlog          ?? 0, 500,  "#b91c1c"],
+    ["DELIVERED", resources.total_delivered  ?? 0, 2000, "#15803d"],
   ];
 
-  const colW = width / metrics.length;
+  const tileW = (width - pad * (metrics.length + 1)) / metrics.length;
+  const tileH = panelH - pad * 2;
   metrics.forEach(([label, value, max, color], i) => {
-    const cx = i * colW + colW / 2;
-    ctx.fillStyle = "#8b949e";
-    ctx.font = "10px monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillText(label, cx, panelY + 6);
+    const tx = pad + i * (tileW + pad);
+    const ty = panelY + pad;
 
+    // Tile card
+    ctx.fillStyle = "#ffffff";
+    roundRect(ctx, tx, ty, tileW, tileH, 8);
+    ctx.fill();
+    ctx.strokeStyle = "#ebe5d6";
+    ctx.lineWidth = 1;
+    roundRect(ctx, tx, ty, tileW, tileH, 8);
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = "#6b6359";
+    ctx.font = "600 9px 'Inter', system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, tx + 10, ty + 8);
+
+    // Value
+    ctx.fillStyle = color;
+    ctx.font = "bold 16px 'JetBrains Mono', monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(String(value), tx + tileW - 10, ty + 6);
+
+    // Capacity bar
     const pct = Math.min(value / max, 1);
-    const barW = colW * 0.72;
-    const barX = cx - barW / 2;
-    ctx.fillStyle = "#30363d";
-    ctx.fillRect(barX, panelY + 22, barW, 5);
+    const barX = tx + 10;
+    const barY = ty + tileH - 8;
+    const barW = tileW - 20;
+    ctx.fillStyle = "#efe9d9";
+    roundRect(ctx, barX, barY, barW, 3, 2);
+    ctx.fill();
     ctx.fillStyle = color;
-    ctx.fillRect(barX, panelY + 22, barW * pct, 5);
-
-    ctx.fillStyle = color;
-    ctx.font = "bold 11px monospace";
-    ctx.textBaseline = "top";
-    ctx.fillText(String(value), cx, panelY + 32);
+    roundRect(ctx, barX, barY, barW * pct, 3, 2);
+    ctx.fill();
   });
 }
 
@@ -155,32 +316,36 @@ function GridCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // High-DPI scaling for crisp text + shapes
+    const dpr = window.devicePixelRatio || 1;
     const width  = canvas.clientWidth;
     const height = canvas.clientHeight;
-    canvas.width  = width;
-    canvas.height = height;
+    canvas.width  = width * dpr;
+    canvas.height = height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    ctx.fillStyle = "#0d1117";
+    // Cream backdrop
+    ctx.fillStyle = "#f4f0e7";
     ctx.fillRect(0, 0, width, height);
 
     if (!gameState) {
-      ctx.fillStyle = "#8b949e";
-      ctx.font = "16px monospace";
+      ctx.fillStyle = "#6b6359";
+      ctx.font = "13px 'Inter', system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("WAITING FOR SIMULATION", width / 2, height / 2);
+      ctx.fillText("Waiting for simulation…", width / 2, height / 2);
       return;
     }
 
     const gridSize = gameState.resources?.grid_size ?? 10;
-    const panelH   = 54;
+    const panelH   = 64;
     const gridH    = height - panelH;
     const cellW    = width  / gridSize;
     const cellH    = gridH  / gridSize;
 
-    // Grid lines
-    ctx.strokeStyle = "#21262d";
-    ctx.lineWidth   = 0.5;
+    // Subtle grid lines — barely visible warm beige
+    ctx.strokeStyle = "rgba(20, 18, 14, 0.04)";
+    ctx.lineWidth   = 1;
     for (let c = 0; c <= gridSize; c++) {
       ctx.beginPath(); ctx.moveTo(c * cellW, 0); ctx.lineTo(c * cellW, gridH); ctx.stroke();
     }
@@ -193,36 +358,8 @@ function GridCanvas() {
       for (const agent of gameState.agents) drawAgent(ctx, agent, cellW, cellH);
     }
 
-    // HUD
-    ctx.fillStyle = "rgba(22,27,34,0.82)";
-    ctx.fillRect(8, 8, 210, 46);
-    ctx.strokeStyle = "#30363d"; ctx.lineWidth = 1;
-    ctx.strokeRect(8, 8, 210, 46);
-    ctx.fillStyle = "#8b949e"; ctx.font = "11px monospace";
-    ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText(`Scenario: ${gameState.scenario.replace(/_/g, " ")}`, 16, 16);
-    ctx.fillStyle = "#00d9ff"; ctx.font = "bold 12px monospace";
-    ctx.fillText(`Score: ${gameState.score.toFixed(2)}  Tick: ${gameState.tick}`, 16, 33);
-
-    // Legend
-    const legendEntries: [string, string][] = [
-      ["🏭 Supplier", "#ff6b6b"], ["🏪 Warehouse", "#00d9ff"],
-      ["🚚 Distributor", "#f59e0b"], ["🛒 Retailer", "#7ee787"],
-    ];
-    const legendW = 110;
-    const legendPad = 6;
-    const legendLineH = 14;
-    const legendH = legendEntries.length * legendLineH + legendPad * 2;
-    const legendX = width - legendW - 8;
-    ctx.fillStyle = "rgba(22,27,34,0.82)";
-    ctx.fillRect(legendX, 8, legendW, legendH);
-    ctx.strokeStyle = "#30363d"; ctx.strokeRect(legendX, 8, legendW, legendH);
-    legendEntries.forEach(([label, color], i) => {
-      ctx.fillStyle = color;
-      ctx.font = "11px monospace"; ctx.textAlign = "left"; ctx.textBaseline = "top";
-      ctx.fillText(label, legendX + legendPad, 8 + legendPad + i * legendLineH);
-    });
-
+    drawHudCard(ctx, gameState.scenario, gameState.score, gameState.tick);
+    drawLegend(ctx, width);
     drawResourcePanel(ctx, gameState.resources as Record<string, number>, width, height, panelH);
   }, [gameState]);
 
@@ -253,14 +390,22 @@ export default function GameViewport() {
       tick: mfgState?.tick ?? 0,
     };
     return (
-      <div className="w-full h-full bg-[#0a0e15]" data-testid="manufacturing-view">
+      <div className="w-full h-full bg-transparent" data-testid="manufacturing-view">
         <ManufacturingView gameState={legacyGameState as import("@/context/SocketContext").GameState} />
       </div>
     );
   }
 
+  if (gameState && gameState.scenario === "supply_chain") {
+    return (
+      <div className="w-full h-full bg-transparent" data-testid="supply-chain-viewport">
+        <SupplyChainView gameState={gameState} />
+      </div>
+    );
+  }
+
   return (
-    <div className="w-full h-full relative bg-[#0d1117]">
+    <div className="w-full h-full relative bg-transparent">
       <GridCanvas />
     </div>
   );

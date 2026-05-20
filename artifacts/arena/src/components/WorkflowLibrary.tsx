@@ -86,7 +86,7 @@ export default function WorkflowLibrary() {
   if (!expanded) {
     return (
       <div
-        className="absolute left-0 top-1/2 -translate-y-1/2 w-8 h-32 bg-[#161b22] border border-l-0 border-[#30363d] rounded-r-md cursor-pointer flex items-center justify-center hover:bg-[#30363d] transition-colors z-40 shadow-xl"
+        className="absolute left-0 top-1/2 -translate-y-1/2 w-8 h-32 bg-[#ffffff] border border-l-0 border-[#ebe5d6] rounded-r-md cursor-pointer flex items-center justify-center hover:bg-[#ebe5d6] transition-colors z-40 shadow-xl"
         onClick={() => setExpanded(true)}
         data-testid="btn-expand-library"
       >
@@ -98,8 +98,8 @@ export default function WorkflowLibrary() {
   }
 
   return (
-    <div className="absolute left-0 top-0 bottom-0 w-80 bg-[#0d1117] border-r border-[#30363d] z-40 flex flex-col shadow-2xl animate-in slide-in-from-left-full">
-      <div className="flex items-center justify-between p-4 border-b border-[#30363d]">
+    <div className="absolute left-0 top-0 bottom-0 w-80 bg-[#f4f0e7] border-r border-[#ebe5d6] z-40 flex flex-col shadow-2xl animate-in slide-in-from-left-full">
+      <div className="flex items-center justify-between p-4 border-b border-[#ebe5d6]">
         <h2 className="text-sm font-semibold flex items-center gap-2">
           <LibraryBig size={16} /> Workflow Library
         </h2>
@@ -108,9 +108,9 @@ export default function WorkflowLibrary() {
         </Button>
       </div>
 
-      <div className="p-4 border-b border-[#30363d]">
+      <div className="p-4 border-b border-[#ebe5d6]">
         <Button
-          className="w-full bg-[#00d9ff] text-[#0d1117] hover:bg-[#00d9ff]/80"
+          className="w-full bg-[#14120e] text-[#f4f0e7] hover:bg-[#14120e]/80"
           onClick={handleSaveCurrent}
           disabled={!gameState}
           data-testid="btn-save-current"
@@ -124,27 +124,27 @@ export default function WorkflowLibrary() {
           {workflows.map((wf) => (
             <div
               key={wf.id}
-              className="bg-[#161b22] p-3 rounded-md border border-[#30363d] flex flex-col gap-2 group"
+              className="bg-[#ffffff] p-3 rounded-md border border-[#ebe5d6] flex flex-col gap-2 group"
             >
               <div className="flex justify-between items-start">
                 <span className="font-mono text-sm">{wf.name}</span>
                 <Badge
                   variant="outline"
-                  className="text-[10px] text-[#00d9ff] border-[#00d9ff]/30 bg-[#00d9ff]/10"
+                  className="text-[10px] text-[#14120e] border-[#14120e]/30 bg-[#14120e]/10"
                 >
                   {wf.scenario}
                 </Badge>
               </div>
               <div className="flex justify-between items-center text-xs text-muted-foreground">
                 <span>
-                  Fitness: <span className="text-[#f59e0b]">{wf.best_fitness}</span>
+                  Fitness: <span className="text-[#b45309]">{wf.best_fitness}</span>
                 </span>
                 <span>{new Date(Number(wf.created_at) * 1000).toLocaleDateString()}</span>
               </div>
               <Button
                 variant="outline"
                 size="sm"
-                className="w-full mt-1 h-7 text-xs border-[#30363d] hover:border-[#00d9ff] hover:text-[#00d9ff]"
+                className="w-full mt-1 h-7 text-xs border-[#ebe5d6] hover:border-[#14120e] hover:text-[#14120e]"
                 onClick={() => handleApply(wf)}
                 disabled={isRunning || applyingId === wf.id}
                 data-testid={`btn-apply-workflow-${wf.id}`}

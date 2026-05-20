@@ -8,12 +8,12 @@ import ManufacturingHUD from "@/components/manufacturing/ManufacturingHUD";
 
 function ManufacturingV2({ state }: { state: MfgGameState }) {
   return (
-    <div className="w-full h-full flex bg-[#0a0e15] overflow-hidden">
+    <div className="w-full h-full flex bg-[#ebe5d6] overflow-hidden">
       <div className="flex-1 min-w-0 relative">
         <GridCanvas state={state} />
       </div>
       <div
-        className="shrink-0 overflow-y-auto border-l border-[#21262d]"
+        className="shrink-0 overflow-y-auto border-l border-[#faf6ed]"
         style={{ width: "220px" }}
       >
         <ManufacturingHUD state={state} />
@@ -30,7 +30,7 @@ const STAGE_CONFIG = [
     agentId:  "worker_raw_materials",
     label:    "Raw Materials",
     emoji:    "⛏️",
-    color:    "#f87171",
+    color:    "#b91c1c",
     inputKey: "raw_input" as const,
     cap:      300,
   },
@@ -39,7 +39,7 @@ const STAGE_CONFIG = [
     agentId:  "worker_intermediates",
     label:    "Intermediates",
     emoji:    "⚙️",
-    color:    "#f59e0b",
+    color:    "#b45309",
     inputKey: "inter_input" as const,
     cap:      200,
   },
@@ -48,16 +48,16 @@ const STAGE_CONFIG = [
     agentId:  "worker_finished_product",
     label:    "Finished Product",
     emoji:    "📦",
-    color:    "#7ee787",
+    color:    "#15803d",
     inputKey: "finished_output" as const,
     cap:      150,
   },
 ] as const;
 
 const STATE_BADGE: Record<string, { label: string; color: string; bg: string }> = {
-  processing: { label: "⚡ Processing", color: "#00d9ff", bg: "#00d9ff18" },
-  blocked:    { label: "🔴 Blocked",    color: "#f87171", bg: "#f8717118" },
-  idle:       { label: "💤 Idle",       color: "#8b949e", bg: "#8b949e18" },
+  processing: { label: "⚡ Processing", color: "#14120e", bg: "#14120e18" },
+  blocked:    { label: "🔴 Blocked",    color: "#b91c1c", bg: "#b91c1c18" },
+  idle:       { label: "💤 Idle",       color: "#6b6359", bg: "#6b635918" },
 };
 
 function BufferBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
@@ -65,10 +65,10 @@ function BufferBar({ label, value, max, color }: { label: string; value: number;
   return (
     <div className="space-y-0.5">
       <div className="flex justify-between text-[10px] font-mono">
-        <span className="text-[#8b949e]">{label}</span>
+        <span className="text-[#6b6359]">{label}</span>
         <span style={{ color }}>{value}</span>
       </div>
-      <div className="h-[6px] rounded-full bg-[#21262d] overflow-hidden">
+      <div className="h-[6px] rounded-full bg-[#faf6ed] overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${pct}%`, backgroundColor: color }}
@@ -100,7 +100,7 @@ function AgentCard({
         <span className="text-xl">{emoji}</span>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold truncate" style={{ color }}>{label}</p>
-          <p className="text-[10px] text-[#8b949e]">Worker Agent</p>
+          <p className="text-[10px] text-[#6b6359]">Worker Agent</p>
         </div>
       </div>
       <div
@@ -114,7 +114,7 @@ function AgentCard({
         <BufferBar label="OUT BUFFER" value={outputBuffer} max={outputCap} color={color + "bb"} />
       </div>
       {lastTrace?.reasoning && (
-        <div className="text-[9px] font-mono text-[#8b949e] italic border-t border-[#30363d] pt-1.5 line-clamp-3 leading-relaxed">
+        <div className="text-[9px] font-mono text-[#6b6359] italic border-t border-[#ebe5d6] pt-1.5 line-clamp-3 leading-relaxed">
           "{lastTrace.reasoning}"
         </div>
       )}
@@ -122,7 +122,7 @@ function AgentCard({
         <div className="text-[10px] font-mono" style={{ color }}>
           → {lastTrace.action}
           {lastTrace.parameters && Object.keys(lastTrace.parameters).length > 0 && (
-            <span className="text-[#8b949e] ml-1">({JSON.stringify(lastTrace.parameters)})</span>
+            <span className="text-[#6b6359] ml-1">({JSON.stringify(lastTrace.parameters)})</span>
           )}
         </div>
       )}
@@ -132,27 +132,27 @@ function AgentCard({
 
 function PlannerCard({ lastTrace }: { lastTrace: AgentThought | null }) {
   return (
-    <div className="flex items-start gap-3 rounded-lg p-3 border" style={{ borderColor: "#a371f744", backgroundColor: "#a371f708" }}>
+    <div className="flex items-start gap-3 rounded-lg p-3 border" style={{ borderColor: "#7c3aed44", backgroundColor: "#7c3aed08" }}>
       <span className="text-2xl mt-0.5">🧠</span>
       <div className="flex-1 min-w-0 space-y-1">
         <div className="flex items-center gap-2">
-          <p className="text-xs font-semibold text-[#a371f7]">Planner Agent</p>
+          <p className="text-xs font-semibold text-[#7c3aed]">Planner Agent</p>
           <span
             className="text-[10px] font-mono px-2 py-0.5 rounded-full"
-            style={{ color: "#a371f7", backgroundColor: "#a371f718", border: "1px solid #a371f744" }}
+            style={{ color: "#7c3aed", backgroundColor: "#7c3aed18", border: "1px solid #7c3aed44" }}
           >
             {lastTrace?.action ?? "querying"}
           </span>
         </div>
         {lastTrace?.reasoning ? (
-          <p className="text-[10px] font-mono text-[#8b949e] italic leading-relaxed line-clamp-2">
+          <p className="text-[10px] font-mono text-[#6b6359] italic leading-relaxed line-clamp-2">
             "{lastTrace.reasoning}"
           </p>
         ) : (
-          <p className="text-[10px] text-[#4d5566]">Awaiting pipeline data…</p>
+          <p className="text-[10px] text-[#8b8378]">Awaiting pipeline data…</p>
         )}
         {lastTrace?.content && (
-          <p className="text-[10px] font-mono text-[#6e7681] truncate">{lastTrace.content}</p>
+          <p className="text-[10px] font-mono text-[#8b8378] truncate">{lastTrace.content}</p>
         )}
       </div>
     </div>
@@ -201,16 +201,16 @@ function ManufacturingLegacy({ gameState }: { gameState: GameState }) {
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#0d1117] p-3 gap-3 overflow-hidden">
+    <div className="w-full h-full flex flex-col bg-transparent p-3 gap-3 overflow-hidden">
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#a371f7] animate-pulse shadow-[0_0_6px_#a371f7]" />
-          <span className="text-xs font-semibold tracking-widest text-[#a371f7]">MANUFACTURING PIPELINE</span>
+          <div className="w-2 h-2 rounded-full bg-[#7c3aed] animate-pulse shadow-[0_0_6px_#7c3aed]" />
+          <span className="text-xs font-semibold tracking-widest text-[#7c3aed]">MANUFACTURING PIPELINE</span>
         </div>
-        <div className="flex items-center gap-4 text-[10px] font-mono text-[#8b949e]">
-          <span>Tick: <span className="text-[#00d9ff]">{gameState.tick}</span></span>
-          <span>Score: <span className="text-[#7ee787]">{gameState.score.toFixed(3)}</span></span>
-          <span>Approved: <span className="text-[#f59e0b]">{res.approved_finished ?? 0}</span></span>
+        <div className="flex items-center gap-4 text-[10px] font-mono text-[#6b6359]">
+          <span>Tick: <span className="text-[#14120e]">{gameState.tick}</span></span>
+          <span>Score: <span className="text-[#15803d]">{gameState.score.toFixed(3)}</span></span>
+          <span>Approved: <span className="text-[#b45309]">{res.approved_finished ?? 0}</span></span>
         </div>
       </div>
       <div className="shrink-0"><PlannerCard lastTrace={plannerTrace} /></div>

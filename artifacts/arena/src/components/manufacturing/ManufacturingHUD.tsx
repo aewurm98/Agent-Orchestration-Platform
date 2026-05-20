@@ -3,27 +3,27 @@ import { useState, useEffect, useCallback } from "react";
 import type { MfgGameState, MfgMetrics } from "@/context/SocketContext";
 
 const MACHINE_STATE_COLOR: Record<string, string> = {
-  idle:         "#8b949e",
-  loading:      "#f59e0b",
-  processing:   "#00d9ff",
-  output_ready: "#7ee787",
-  broken:       "#f87171",
-  offline:      "#4d5566",
+  idle:         "#6b6359",
+  loading:      "#b45309",
+  processing:   "#14120e",
+  output_ready: "#15803d",
+  broken:       "#b91c1c",
+  offline:      "#8b8378",
 };
 
 const ROLE_COLOR: Record<string, string> = {
-  procurement: "#f59e0b",
-  operations:  "#00d9ff",
-  engineering: "#a371f7",
-  sales:       "#7ee787",
-  management:  "#f87171",
+  procurement: "#b45309",
+  operations:  "#14120e",
+  engineering: "#7c3aed",
+  sales:       "#15803d",
+  management:  "#b91c1c",
 };
 
 function MetricBadge({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
-    <div className="flex flex-col items-center px-2 py-1 rounded bg-[#161b22] border border-[#30363d] min-w-[60px]">
-      <span className="text-[9px] font-mono text-[#8b949e] uppercase tracking-wide">{label}</span>
-      <span className="text-[12px] font-bold font-mono" style={{ color: color ?? "#e6edf3" }}>
+    <div className="flex flex-col items-center px-2 py-1 rounded bg-[#ffffff] border border-[#ebe5d6] min-w-[60px]">
+      <span className="text-[9px] font-mono text-[#6b6359] uppercase tracking-wide">{label}</span>
+      <span className="text-[12px] font-bold font-mono" style={{ color: color ?? "#14120e" }}>
         {value}
       </span>
     </div>
@@ -33,7 +33,7 @@ function MetricBadge({ label, value, color }: { label: string; value: string | n
 function Bar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = Math.min((value / Math.max(max, 1)) * 100, 100);
   return (
-    <div className="flex-1 h-[4px] rounded-full bg-[#21262d] overflow-hidden">
+    <div className="flex-1 h-[4px] rounded-full bg-[#faf6ed] overflow-hidden">
       <div className="h-full rounded-full transition-all duration-300" style={{ width: `${pct}%`, backgroundColor: color }} />
     </div>
   );
@@ -42,23 +42,23 @@ function Bar({ value, max, color }: { value: number; max: number; color: string 
 function BudgetPanel({ budget, startingBudget, metrics }: { budget: number; startingBudget: number; metrics: MfgMetrics | null }) {
   const base = startingBudget > 0 ? startingBudget : 8000;
   const pct = Math.min((budget / base) * 100, 100);
-  const budgetColor = budget > base * 0.5 ? "#7ee787" : budget > base * 0.25 ? "#f59e0b" : "#f87171";
+  const budgetColor = budget > base * 0.5 ? "#15803d" : budget > base * 0.25 ? "#b45309" : "#b91c1c";
 
   return (
-    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
+    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
       <div className="flex items-center justify-between">
-        <span className="text-[9px] font-mono text-[#8b949e] uppercase">Budget</span>
+        <span className="text-[9px] font-mono text-[#6b6359] uppercase">Budget</span>
         <span className="text-[12px] font-bold font-mono" style={{ color: budgetColor }}>
           ${budget.toLocaleString(undefined, { maximumFractionDigits: 0 })}
         </span>
       </div>
       <Bar value={budget} max={base} color={budgetColor} />
       {metrics && (
-        <div className="flex gap-2 text-[9px] font-mono text-[#8b949e]">
-          <span>Profit: <span style={{ color: metrics.current_profit >= 0 ? "#7ee787" : "#f87171" }}>
+        <div className="flex gap-2 text-[9px] font-mono text-[#6b6359]">
+          <span>Profit: <span style={{ color: metrics.current_profit >= 0 ? "#15803d" : "#b91c1c" }}>
             ${metrics.current_profit.toFixed(0)}
           </span></span>
-          <span>Rev: <span className="text-[#00d9ff]">${metrics.total_revenue.toFixed(0)}</span></span>
+          <span>Rev: <span className="text-[#14120e]">${metrics.total_revenue.toFixed(0)}</span></span>
         </div>
       )}
     </div>
@@ -68,24 +68,24 @@ function BudgetPanel({ budget, startingBudget, metrics }: { budget: number; star
 function OrdersPanel({ orders }: { orders: MfgGameState["active_orders"] }) {
   if (!orders || orders.length === 0) {
     return (
-      <div className="p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
-        <span className="text-[9px] font-mono text-[#4d5566]">No active orders</span>
+      <div className="p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
+        <span className="text-[9px] font-mono text-[#8b8378]">No active orders</span>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
-      <span className="text-[9px] font-mono text-[#8b949e] uppercase">Orders ({orders.length})</span>
+    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
+      <span className="text-[9px] font-mono text-[#6b6359] uppercase">Orders ({orders.length})</span>
       <div className="flex flex-col gap-0.5 max-h-[80px] overflow-y-auto">
         {orders.slice(0, 4).map((order) => (
           <div key={order.id} className="flex items-center gap-1 text-[9px] font-mono">
-            <span className={order.is_rush ? "text-[#f87171]" : "text-[#8b949e]"}>
+            <span className={order.is_rush ? "text-[#b91c1c]" : "text-[#6b6359]"}>
               {order.is_rush ? "⚡" : "📋"}
             </span>
-            <span className="text-[#e6edf3]">{order.id}</span>
-            <span className="text-[#f59e0b]">${order.effective_price}</span>
-            <span className="text-[#6e7681]">→ T{order.deadline_tick}</span>
+            <span className="text-[#14120e]">{order.id}</span>
+            <span className="text-[#b45309]">${order.effective_price}</span>
+            <span className="text-[#8b8378]">→ T{order.deadline_tick}</span>
           </div>
         ))}
       </div>
@@ -96,9 +96,9 @@ function OrdersPanel({ orders }: { orders: MfgGameState["active_orders"] }) {
 // ── Live order activity feed ──────────────────────────────────────────────────
 
 const ORDER_EVENT_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
-  order_arrived:   { label: "Arrived",   color: "#00d9ff", icon: "📋" },
-  order_fulfilled: { label: "Fulfilled", color: "#7ee787", icon: "✓" },
-  order_missed:    { label: "Missed",    color: "#f87171", icon: "✗" },
+  order_arrived:   { label: "Arrived",   color: "#14120e", icon: "📋" },
+  order_fulfilled: { label: "Fulfilled", color: "#15803d", icon: "✓" },
+  order_missed:    { label: "Missed",    color: "#b91c1c", icon: "✗" },
 };
 
 function OrderFeed({ alerts }: { alerts: AlertItem[] }) {
@@ -109,29 +109,29 @@ function OrderFeed({ alerts }: { alerts: AlertItem[] }) {
     .reverse();
 
   return (
-    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
+    <div className="flex flex-col gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
       <div className="flex items-center justify-between mb-0.5">
-        <span className="text-[9px] font-mono text-[#8b949e] uppercase">Order Feed</span>
-        <span className="text-[9px] font-mono text-[#4d5566]">{orderEvents.length} events</span>
+        <span className="text-[9px] font-mono text-[#6b6359] uppercase">Order Feed</span>
+        <span className="text-[9px] font-mono text-[#8b8378]">{orderEvents.length} events</span>
       </div>
       {orderEvents.length === 0 ? (
-        <span className="text-[9px] font-mono text-[#4d5566]">Waiting for orders…</span>
+        <span className="text-[9px] font-mono text-[#8b8378]">Waiting for orders…</span>
       ) : (
         <div className="flex flex-col gap-0.5 max-h-[96px] overflow-y-auto">
           {orderEvents.map((ev) => {
             const evKey = ev.event!;
-            const cfg = ORDER_EVENT_CONFIG[evKey] ?? { label: evKey, color: "#8b949e", icon: "·" };
+            const cfg = ORDER_EVENT_CONFIG[evKey] ?? { label: evKey, color: "#6b6359", icon: "·" };
             return (
               <div key={ev.id} className="flex items-center gap-1.5 text-[9px] font-mono leading-tight">
                 <span style={{ color: cfg.color }}>{cfg.icon}</span>
                 <span style={{ color: cfg.color }} className="shrink-0">{cfg.label}</span>
-                {ev.is_rush && <span className="text-[#f87171]">⚡RUSH</span>}
-                <span className="text-[#6e7681] truncate">{ev.order_id}</span>
+                {ev.is_rush && <span className="text-[#b91c1c]">⚡RUSH</span>}
+                <span className="text-[#8b8378] truncate">{ev.order_id}</span>
                 {ev.revenue != null && (
-                  <span className="ml-auto text-[#7ee787] shrink-0">+${ev.revenue.toFixed(0)}</span>
+                  <span className="ml-auto text-[#15803d] shrink-0">+${ev.revenue.toFixed(0)}</span>
                 )}
                 {ev.base_price != null && evKey === "order_arrived" && (
-                  <span className="ml-auto text-[#f59e0b] shrink-0">${ev.base_price.toFixed(0)}</span>
+                  <span className="ml-auto text-[#b45309] shrink-0">${ev.base_price.toFixed(0)}</span>
                 )}
               </div>
             );
@@ -152,18 +152,18 @@ function MachineStatusRow({ machines }: { machines: MfgGameState["machines"] }) 
   const brokenCount = states["broken"] ?? 0;
 
   return (
-    <div className="flex flex-wrap gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
-      <span className="w-full text-[9px] font-mono text-[#8b949e] uppercase">Machines ({machineList.length})</span>
+    <div className="flex flex-wrap gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
+      <span className="w-full text-[9px] font-mono text-[#6b6359] uppercase">Machines ({machineList.length})</span>
       {machineList.map((m) => (
         <div
           key={m.id}
           className="w-2 h-2 rounded-sm"
           title={`${m.id}: ${m.state}`}
-          style={{ backgroundColor: MACHINE_STATE_COLOR[m.state] ?? "#8b949e" }}
+          style={{ backgroundColor: MACHINE_STATE_COLOR[m.state] ?? "#6b6359" }}
         />
       ))}
       {brokenCount > 0 && (
-        <span className="text-[9px] font-mono text-[#f87171] animate-pulse">
+        <span className="text-[9px] font-mono text-[#b91c1c] animate-pulse">
           ⚠ {brokenCount} broken
         </span>
       )}
@@ -176,17 +176,17 @@ function AgentStatusRow({ agents }: { agents: MfgGameState["agents"] }) {
   const agentList = Object.values(agents);
 
   return (
-    <div className="flex flex-wrap gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
-      <span className="w-full text-[9px] font-mono text-[#8b949e] uppercase">Agents ({agentList.length})</span>
+    <div className="flex flex-wrap gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
+      <span className="w-full text-[9px] font-mono text-[#6b6359] uppercase">Agents ({agentList.length})</span>
       {agentList.map((a) => (
         <div
           key={a.id}
           className="px-1 py-0.5 rounded text-[9px] font-mono"
           title={`${a.id}: ${a.state}`}
           style={{
-            backgroundColor: (ROLE_COLOR[a.role] ?? "#8b949e") + "22",
-            color: ROLE_COLOR[a.role] ?? "#8b949e",
-            border: `1px solid ${(ROLE_COLOR[a.role] ?? "#8b949e")}44`,
+            backgroundColor: (ROLE_COLOR[a.role] ?? "#6b6359") + "22",
+            color: ROLE_COLOR[a.role] ?? "#6b6359",
+            border: `1px solid ${(ROLE_COLOR[a.role] ?? "#6b6359")}44`,
           }}
         >
           {a.role.slice(0, 3).toUpperCase()}
@@ -219,27 +219,27 @@ function SpeedControl() {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-1 p-2 rounded-lg border border-[#30363d] bg-[#0d1117]">
-      <span className="text-[9px] font-mono text-[#8b949e] uppercase mr-1">Speed</span>
+    <div className="flex flex-wrap items-center gap-1 p-2 rounded-lg border border-[#ebe5d6] bg-[#f4f0e7]">
+      <span className="text-[9px] font-mono text-[#6b6359] uppercase mr-1">Speed</span>
       {SPEED_PRESETS.map(({ label, mult }) => (
         <button
           key={label}
           onClick={() => setSpeed(mult)}
-          className="px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-[#30363d] text-[#8b949e] hover:text-[#00d9ff] hover:border-[#00d9ff] transition-colors"
+          className="px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-[#ebe5d6] text-[#6b6359] hover:text-[#14120e] hover:border-[#14120e] transition-colors"
         >
           {label}
         </button>
       ))}
       <button
         onClick={doPause}
-        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#30363d] text-[#8b949e] hover:text-[#f87171] hover:border-[#f87171] transition-colors"
+        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#ebe5d6] text-[#6b6359] hover:text-[#b91c1c] hover:border-[#b91c1c] transition-colors"
         title="Pause simulation"
       >
         ⏸
       </button>
       <button
         onClick={doResume}
-        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#30363d] text-[#8b949e] hover:text-[#7ee787] hover:border-[#7ee787] transition-colors"
+        className="px-2 py-0.5 rounded text-[10px] font-mono border border-[#ebe5d6] text-[#6b6359] hover:text-[#15803d] hover:border-[#15803d] transition-colors"
         title="Resume simulation"
       >
         ▶
@@ -279,14 +279,14 @@ function ToastAlerts({ alerts }: { alerts: AlertItem[] }) {
       {visible.map((alert) => (
         <div
           key={alert.id}
-          className="flex items-start justify-between gap-1 px-2 py-1 rounded border border-[#f8717144] bg-[#f8717110] animate-in fade-in"
+          className="flex items-start justify-between gap-1 px-2 py-1 rounded border border-[#b91c1c44] bg-[#b91c1c10] animate-in fade-in"
         >
-          <span className="text-[9px] font-mono text-[#f87171] leading-tight">
+          <span className="text-[9px] font-mono text-[#b91c1c] leading-tight">
             ⚠ {alert.event ? alert.event.replace(/_/g, " ") : (alert.message ?? JSON.stringify(alert))}
           </span>
           <button
             onClick={() => dismiss(alert.id)}
-            className="text-[8px] font-mono text-[#f8717188] hover:text-[#f87171] shrink-0 leading-none pt-0.5"
+            className="text-[8px] font-mono text-[#b91c1c88] hover:text-[#b91c1c] shrink-0 leading-none pt-0.5"
             title="Dismiss"
           >
             ✕
@@ -324,29 +324,29 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
         <div className="flex items-center gap-2">
           <div
             className="w-2 h-2 rounded-full animate-pulse"
-            style={{ backgroundColor: "#a371f7", boxShadow: "0 0 6px #a371f7" }}
+            style={{ backgroundColor: "#7c3aed", boxShadow: "0 0 6px #7c3aed" }}
           />
-          <span className="text-[11px] font-bold tracking-widest text-[#a371f7] font-mono">
+          <span className="text-[11px] font-bold tracking-widest text-[#7c3aed] font-mono">
             MFG v2
           </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] font-mono">
-          <MetricBadge label="Tick" value={state.tick ?? 0} color="#00d9ff" />
+          <MetricBadge label="Tick" value={state.tick ?? 0} color="#14120e" />
           <MetricBadge
             label="Fitness"
             value={(state.fitness ?? 0).toFixed(2)}
-            color={state.fitness > 0 ? "#7ee787" : "#f87171"}
+            color={state.fitness > 0 ? "#15803d" : "#b91c1c"}
           />
         </div>
       </div>
 
       {/* Simulation progress */}
-      <div className="shrink-0 flex items-center gap-2 text-[9px] font-mono text-[#8b949e]">
+      <div className="shrink-0 flex items-center gap-2 text-[9px] font-mono text-[#6b6359]">
         <span>Progress</span>
-        <div className="flex-1 h-[3px] rounded-full bg-[#21262d] overflow-hidden">
+        <div className="flex-1 h-[3px] rounded-full bg-[#faf6ed] overflow-hidden">
           <div
             className="h-full rounded-full transition-all duration-500"
-            style={{ width: `${simProgress}%`, backgroundColor: "#a371f7" }}
+            style={{ width: `${simProgress}%`, backgroundColor: "#7c3aed" }}
           />
         </div>
         <span>{state.simulation_length ? `${state.tick}/${state.simulation_length}` : state.tick}</span>
@@ -360,10 +360,10 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
       {/* Metrics row */}
       {metrics && (
         <div className="shrink-0 flex flex-wrap gap-1">
-          <MetricBadge label="Thru" value={metrics.throughput} color="#00d9ff" />
-          <MetricBadge label="Fulfilled" value={metrics.orders_fulfilled} color="#7ee787" />
-          <MetricBadge label="Missed" value={metrics.orders_missed} color="#f87171" />
-          <MetricBadge label="M.Util" value={`${(metrics.machine_utilization * 100).toFixed(0)}%`} color="#f59e0b" />
+          <MetricBadge label="Thru" value={metrics.throughput} color="#14120e" />
+          <MetricBadge label="Fulfilled" value={metrics.orders_fulfilled} color="#15803d" />
+          <MetricBadge label="Missed" value={metrics.orders_missed} color="#b91c1c" />
+          <MetricBadge label="M.Util" value={`${(metrics.machine_utilization * 100).toFixed(0)}%`} color="#b45309" />
         </div>
       )}
 
@@ -400,9 +400,9 @@ export default function ManufacturingHUD({ state }: { state: MfgGameState }) {
       )}
 
       {state.done && (
-        <div className="shrink-0 p-2 rounded-lg border border-[#7ee787] bg-[#7ee78708] text-center">
-          <p className="text-[11px] font-bold font-mono text-[#7ee787]">✓ SIMULATION COMPLETE</p>
-          <p className="text-[9px] font-mono text-[#8b949e]">
+        <div className="shrink-0 p-2 rounded-lg border border-[#15803d] bg-[#15803d08] text-center">
+          <p className="text-[11px] font-bold font-mono text-[#15803d]">✓ SIMULATION COMPLETE</p>
+          <p className="text-[9px] font-mono text-[#6b6359]">
             Profit: ${(metrics?.current_profit ?? 0).toFixed(0)} | Fitness: {(state.fitness ?? 0).toFixed(3)}
           </p>
         </div>

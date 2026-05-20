@@ -891,6 +891,24 @@ async def mfg_resume(sid: str, data: dict) -> None:
 
 
 @sio.event
+async def set_supply_chain_knobs(sid: str, data: dict) -> None:
+    """User overrides for the supply chain INTRA-mode sliders.
+
+    Payload: { supply_rate?: number|null, retail_demand_base?: number|null }
+    `null` clears that override and falls back to genome / default.
+    """
+    env = _sc_module._active_env
+    if env is None:
+        print(f"[supply_chain] no active env; ignoring knob update from {sid}")
+        return
+    try:
+        env.set_user_knobs(data or {})
+        print(f"[supply_chain] knobs set by {sid}: {data}")
+    except Exception as e:
+        print(f"[supply_chain] set_user_knobs failed: {e}")
+
+
+@sio.event
 async def mfg_action(sid: str, data: dict) -> None:
     """Human-in-the-loop: forward a manual action for a specific agent."""
     from api.mfg_router import get_env

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSocket } from "@/hooks/useSocket";
 
 import GameViewport from "@/components/GameViewport";
@@ -13,14 +14,16 @@ import EvoDashboard from "@/components/EvoDashboard";
 import TracePanel from "@/components/TracePanel";
 import WorkflowLibrary from "@/components/WorkflowLibrary";
 import HITLModal from "@/components/HITLModal";
+import PixelGradient from "@/components/PixelGradient";
 
 export default function Arena() {
-  const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, clearSessionState } = useSocket();
+  const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, clearSessionState, mfgState } = useSocket();
   const [scenario, setScenario] = useState("Supply Chain");
   const [boundaryMode, setBoundaryMode] = useState<"INTRA" | "INTER">("INTRA");
   const [mutationStrategy, setMutationStrategy] = useState<"MATH" | "LLM">("MATH");
   const [interTicks, setInterTicks] = useState(100);
   const [isHitl, setIsHitl] = useState(false);
+  const [sidePanelOpen, setSidePanelOpen] = useState(true);
 
   const handleStart = async () => {
     try {
@@ -55,28 +58,35 @@ export default function Arena() {
     emitScenarioSelect(val);
   };
 
+  const selectTriggerClass =
+    "h-9 text-xs bg-white border border-[#ebe5d6] text-[#14120e] rounded-lg hover:border-[#14120e]/30 transition-colors shadow-none";
+  const selectContentClass = "bg-white border border-[#ebe5d6] text-[#14120e] rounded-xl shadow-lg";
+
   return (
-    <div className="flex flex-col h-[100dvh] w-full bg-[#0d1117] text-foreground overflow-hidden font-sans">
+    <div className="flex flex-col h-[100dvh] w-full p-3 gap-3 text-foreground overflow-hidden font-sans">
       <HITLModal />
       <WorkflowLibrary />
 
-      {/* TOP BAR */}
-      <header className="h-[50px] shrink-0 border-b border-[#30363d] bg-[#161b22] px-4 flex items-center justify-between z-10 shadow-sm">
+      {/* TOP BAR — white tile */}
+      <header className="shrink-0 tile rounded-2xl px-4 h-[60px] flex items-center justify-between z-10 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-[#e6edf3] font-bold tracking-widest text-sm mr-2">
-            <div className="w-2 h-2 rounded-full bg-[#00d9ff] animate-pulse shadow-[0_0_8px_#00d9ff]"></div>
-            AE:ARENA
+          {/* Brand: pixel-gradient dot + wordmark */}
+          <div className="flex items-center gap-2.5 mr-2">
+            <div className="w-8 h-8 rounded-lg overflow-hidden pixel-gradient" aria-hidden="true" />
+            <span className="font-semibold tracking-tight text-[15px] text-[#14120e]">
+              AE&nbsp;<span className="text-[#6b6359] font-medium">Arena</span>
+            </span>
           </div>
 
           {/* Scenario selector */}
           <Select value={scenario} onValueChange={handleScenarioChange} disabled={isRunning}>
             <SelectTrigger
-              className="w-[160px] h-8 text-xs bg-[#0d1117] border-[#30363d] text-[#e6edf3]"
+              className={`w-[160px] ${selectTriggerClass}`}
               data-testid="select-scenario"
             >
               <SelectValue placeholder="Scenario" />
             </SelectTrigger>
-            <SelectContent className="bg-[#161b22] border-[#30363d] text-[#e6edf3]">
+            <SelectContent className={selectContentClass}>
               <SelectItem value="Supply Chain">Supply Chain</SelectItem>
               <SelectItem value="Disaster Relief">Disaster Relief</SelectItem>
               <SelectItem value="Peer Agents">Peer Agents</SelectItem>
@@ -95,12 +105,12 @@ export default function Arena() {
             disabled={isRunning}
           >
             <SelectTrigger
-              className="w-[110px] h-8 text-xs bg-[#0d1117] border-[#30363d] text-[#e6edf3]"
+              className={`w-[110px] ${selectTriggerClass}`}
               data-testid="select-boundary-mode"
             >
               <SelectValue placeholder="Boundary" />
             </SelectTrigger>
-            <SelectContent className="bg-[#161b22] border-[#30363d] text-[#e6edf3]">
+            <SelectContent className={selectContentClass}>
               <SelectItem value="INTRA">
                 <span className="font-mono">INTRA</span>
               </SelectItem>
@@ -110,19 +120,19 @@ export default function Arena() {
             </SelectContent>
           </Select>
 
-          {/* Mutation strategy selector — LLM only available in INTER mode */}
+          {/* Mutation strategy selector */}
           <Select
             value={mutationStrategy}
             onValueChange={(v) => setMutationStrategy(v as "MATH" | "LLM")}
             disabled={isRunning}
           >
             <SelectTrigger
-              className="w-[100px] h-8 text-xs bg-[#0d1117] border-[#30363d] text-[#e6edf3]"
+              className={`w-[100px] ${selectTriggerClass}`}
               data-testid="select-mutation-strategy"
             >
               <SelectValue placeholder="Mutate" />
             </SelectTrigger>
-            <SelectContent className="bg-[#161b22] border-[#30363d] text-[#e6edf3]">
+            <SelectContent className={selectContentClass}>
               <SelectItem value="MATH">
                 <span className="font-mono">MATH</span>
               </SelectItem>
@@ -135,7 +145,7 @@ export default function Arena() {
           {/* Episode length — only visible in INTER mode */}
           {boundaryMode === "INTER" && (
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-[#8b949e] font-mono uppercase tracking-wider">T=</span>
+              <span className="text-[10px] text-[#6b6359] font-mono uppercase tracking-wider">T=</span>
               <input
                 type="number"
                 min={10}
@@ -144,51 +154,50 @@ export default function Arena() {
                 value={interTicks}
                 onChange={(e) => setInterTicks(Math.max(10, Math.min(500, Number(e.target.value))))}
                 disabled={isRunning}
-                className="w-[60px] h-8 text-xs bg-[#0d1117] border border-[#30363d] text-[#e6edf3] rounded px-2 font-mono focus:outline-none focus:border-[#00d9ff] disabled:opacity-40"
+                className="w-[60px] h-9 text-xs bg-white border border-[#ebe5d6] text-[#14120e] rounded-lg px-2 font-mono focus:outline-none focus:border-[#14120e] disabled:opacity-40"
               />
             </div>
           )}
 
-          {/* Distinct Start button */}
+          {/* Primary CTA — charcoal pill (matches "Start Free Trial") */}
           <Button
             size="sm"
-            className="h-8 px-5 text-xs font-semibold bg-[#00d9ff] text-[#0d1117] hover:bg-[#00d9ff]/80 disabled:opacity-40"
+            className="h-9 px-5 text-xs font-semibold bg-[#14120e] text-[#f4f0e7] hover:bg-[#2a2620] rounded-lg shadow-none disabled:opacity-40"
             onClick={handleStart}
             disabled={isRunning}
             data-testid="btn-start"
           >
-            INITIATE
+            Start Free Trial
           </Button>
 
-          {/* Distinct Stop button — only rendered while running */}
+          {/* Stop button — outlined danger */}
           {isRunning && (
             <Button
               size="sm"
-              variant="destructive"
-              className="h-8 px-5 text-xs font-semibold"
+              className="h-9 px-5 text-xs font-semibold bg-white text-[#b91c1c] border border-[#b91c1c]/30 hover:bg-[#b91c1c]/5 rounded-lg shadow-none"
               onClick={handleStop}
               data-testid="btn-stop"
             >
-              STOP
+              Stop
             </Button>
           )}
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-5">
           {/* Mode indicator badges */}
           {isRunning && (
             <div className="flex items-center gap-2">
-              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
                 boundaryMode === "INTER"
-                  ? "border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10"
-                  : "border-[#30363d] text-[#8b949e]"
+                  ? "border-[#14120e]/20 text-[#14120e] bg-white"
+                  : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
               }`}>
                 {boundaryMode}
               </span>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
                 mutationStrategy === "LLM"
-                  ? "border-[#a78bfa] text-[#a78bfa] bg-[#a78bfa]/10"
-                  : "border-[#30363d] text-[#8b949e]"
+                  ? "border-[#14120e]/20 text-[#14120e] bg-white"
+                  : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
               }`}>
                 {mutationStrategy}
               </span>
@@ -196,75 +205,108 @@ export default function Arena() {
           )}
 
           <div className="flex items-center gap-2">
-            <Label htmlFor="mode-toggle" className="text-xs text-muted-foreground uppercase tracking-wider">
-              {isHitl ? "HITL Mode" : "Autonomous"}
+            <Label htmlFor="mode-toggle" className="text-[11px] text-[#6b6359] uppercase tracking-wider">
+              {isHitl ? "HITL" : "Auto"}
             </Label>
             <Switch
               id="mode-toggle"
               checked={isHitl}
               onCheckedChange={setIsHitl}
               disabled={isRunning}
-              className="data-[state=checked]:bg-[#f59e0b]"
+              className="data-[state=checked]:bg-[#14120e]"
             />
           </div>
 
-          <div className="flex items-center gap-2 border-l border-[#30363d] pl-6">
-            <span className="text-xs text-[#8b949e] uppercase tracking-wider">Generation</span>
-            <span className="font-mono text-[#00d9ff] font-bold text-lg">
+          {/* Generation counter — dark pill (matches "01 AI sorts" ring in inspo) */}
+          <div className="flex items-center gap-3 tile-dark rounded-full pl-3 pr-4 py-1.5">
+            <span className="text-[10px] uppercase tracking-widest text-[#f4f0e7]/60">Gen</span>
+            <span className="font-mono text-[#f4f0e7] font-bold text-base leading-none tabular-nums">
               {currentGeneration.toString().padStart(4, "0")}
             </span>
           </div>
         </div>
       </header>
 
-      {/* CONTENT AREA */}
-      <main className="flex-1 flex overflow-hidden">
-        {/* LEFT COLUMN */}
-        <div className="w-[55%] flex flex-col border-r border-[#30363d]">
-          <div className="h-[65%] w-full relative">
-            <GameViewport />
-          </div>
-          <div className="h-[35%] w-full border-t border-[#30363d]">
-            <MetricsBar />
-          </div>
+      {/* CONTENT — modular tiles */}
+      <main className="flex-1 flex gap-3 overflow-hidden">
+        {/* LEFT COLUMN — full height for manufacturing (no metrics bar) */}
+        <div className={`flex flex-col gap-3 transition-all duration-300 ${sidePanelOpen ? "w-[55%]" : "flex-1"}`}>
+          {mfgState?.grid ? (
+            <div className="flex-1 tile rounded-2xl overflow-hidden shadow-sm relative">
+              <GameViewport />
+            </div>
+          ) : (
+            <>
+              <div className="h-[65%] tile rounded-2xl overflow-hidden shadow-sm relative">
+                <GameViewport />
+              </div>
+              <div className="h-[35%] tile rounded-2xl overflow-hidden shadow-sm">
+                <MetricsBar />
+              </div>
+            </>
+          )}
         </div>
 
-        {/* RIGHT COLUMN */}
-        <div className="w-[45%] flex flex-col bg-[#161b22]">
-          <Tabs defaultValue="dag" className="w-full h-full flex flex-col">
-            <div className="border-b border-[#30363d] bg-[#0d1117] px-2 pt-2 shrink-0">
-              <TabsList className="bg-transparent border-none gap-2 p-0 h-auto">
-                {["DAG", "Evolution", "Traces", "Library"].map((tab) => (
-                  <TabsTrigger
-                    key={tab}
-                    value={tab.toLowerCase()}
-                    className="data-[state=active]:bg-[#161b22] data-[state=active]:text-[#00d9ff] data-[state=active]:border-b-2 data-[state=active]:border-[#00d9ff] rounded-none px-4 py-2 text-xs uppercase tracking-wider text-muted-foreground hover:text-[#e6edf3] transition-colors"
-                  >
-                    {tab}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
+        {/* RIGHT COLUMN — light tile with charcoal tab pills */}
+        {sidePanelOpen ? (
+          <div className="w-[45%] tile rounded-2xl overflow-hidden shadow-sm flex flex-col relative">
+            <button
+              onClick={() => setSidePanelOpen(false)}
+              className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full flex items-center justify-center text-[#6b6359] hover:text-[#14120e] hover:bg-[#efe9d9] transition-colors"
+              aria-label="Collapse side panel"
+              data-testid="btn-collapse-side"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <Tabs defaultValue="dag" className="w-full h-full flex flex-col">
+              <div className="px-3 pt-3 pr-12 shrink-0 border-b border-[#ebe5d6]">
+                <TabsList className="bg-transparent border-none gap-1 p-0 h-auto">
+                  {["DAG", "Evolution", "Traces", "Library"].map((tab) => (
+                    <TabsTrigger
+                      key={tab}
+                      value={tab.toLowerCase()}
+                      className="data-[state=active]:bg-[#14120e] data-[state=active]:text-[#f4f0e7] data-[state=inactive]:text-[#6b6359] data-[state=inactive]:hover:text-[#14120e] data-[state=inactive]:hover:bg-[#efe9d9] rounded-full px-3.5 py-1.5 text-xs font-medium tracking-wide transition-colors mb-2"
+                    >
+                      {tab}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
 
-            <div className="flex-1 overflow-hidden relative">
-              <TabsContent value="dag" className="m-0 h-full data-[state=inactive]:hidden">
-                <DAGVisualizer />
-              </TabsContent>
-              <TabsContent value="evolution" className="m-0 h-full data-[state=inactive]:hidden">
-                <EvoDashboard />
-              </TabsContent>
-              <TabsContent value="traces" className="m-0 h-full data-[state=inactive]:hidden">
-                <TracePanel />
-              </TabsContent>
-              <TabsContent value="library" className="m-0 h-full data-[state=inactive]:hidden p-4">
-                <div className="text-muted-foreground text-sm">
-                  Expand the library sidebar on the left to view and apply saved workflows.
-                </div>
-              </TabsContent>
-            </div>
-          </Tabs>
-        </div>
+              <div className="flex-1 overflow-hidden relative bg-white">
+                <TabsContent value="dag" className="m-0 h-full data-[state=inactive]:hidden">
+                  <DAGVisualizer />
+                </TabsContent>
+                <TabsContent value="evolution" className="m-0 h-full data-[state=inactive]:hidden">
+                  <EvoDashboard />
+                </TabsContent>
+                <TabsContent value="traces" className="m-0 h-full data-[state=inactive]:hidden">
+                  <TracePanel />
+                </TabsContent>
+                <TabsContent value="library" className="m-0 h-full data-[state=inactive]:hidden p-6">
+                  <div className="text-[#6b6359] text-sm">
+                    Expand the library sidebar on the left to view and apply saved workflows.
+                  </div>
+                </TabsContent>
+              </div>
+            </Tabs>
+          </div>
+        ) : (
+          <button
+            onClick={() => setSidePanelOpen(true)}
+            className="tile rounded-2xl shadow-sm w-11 flex items-center justify-center text-[#6b6359] hover:text-[#14120e] hover:bg-[#efe9d9] transition-colors"
+            aria-label="Expand side panel"
+            data-testid="btn-expand-side"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        )}
       </main>
+
+      {/* Subtle decorative pixel-gradient strip behind the layout (bottom-left) */}
+      <div className="pointer-events-none fixed -bottom-12 -left-12 w-[340px] h-[110px] opacity-40 -z-0">
+        <PixelGradient cols={26} rows={6} cell={12} gap={2} />
+      </div>
     </div>
   );
 }
