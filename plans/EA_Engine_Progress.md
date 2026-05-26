@@ -163,6 +163,36 @@ With `mutation_strategy=DEAP` and `scenario=supply_chain`, a /api/scenario/start
 
 *Both prioritized scenarios (manufacturing + supply chain) now have full DEAP support.*
 
+---
+
+## Phase 3.5 — Commits + final smoke test  ✅ Complete
+
+Three commits landed on `ea-engine-v1` (newest first):
+
+| SHA | Subject | Files | Lines |
+|---|---|---|---|
+| `a78cabc` | Gitignore Claude Code session artifacts | `.gitignore` | +4 |
+| `eca7824` | EA engine v1: DEAP wrapper + persistence + manufacturing & supply_chain pipelines | 9 | +2024 / −358 |
+| `844df14` | Capture pre-EA WIP from prior session | 17 | +2638 / −733 |
+
+Branch is now ahead of `ui-upgrade-v2` by 3 commits. Working tree clean.
+
+**End-to-end smoke test (post-commit):** all green.
+- DEAP available, both strategies registered.
+- `SupplyChainEnv.apply_genome()` propagates `supply_rate=25, transfer_amount=30` to instance overrides correctly (verified by reading back `env._supply_gen_units == 25`, `env._truck_capacity == 30`).
+- `save_ea_generation` writes to `ea_generations` table cleanly.
+
+### Action items raised this phase
+- **A14 (DevOps / Backend lead):** Branch `ea-engine-v1` has 3 commits ahead of `ui-upgrade-v2`. When ready to merge: PR or fast-forward into `ui-upgrade-v2`, then merge that into `main` per existing flow. No conflicts expected with `ui-upgrade-v2` because the pre-EA WIP commit captured everything that was in the working tree.
+
+### What's still open (deferred / non-blocking)
+- **Phase 6 — Tests:** No pytest suite for the EA path yet. Smoke tests pass; we have not written formal unit tests for encode/decode determinism, crossover correctness, fitness monotonicity under elitism, etc. ~1 hr to deliver.
+- **Phase 7 — Frontend UI toggle for engine selection:** Deferred per A6 direction; today the engine is set via API param or env var.
+- **Phase 8 — Docs + deploy notes:** Plans are in `plans/`; a separate `docs/EA_ENGINE.md` aimed at end users (how to enable DEAP, how to read /api/ea/generations, etc.) would help if this ships externally.
+- **A11 (LLM provider):** `meta_optimizer.py` is OpenAI-only; project Secrets has Anthropic only. The LLM strategy silently falls back to MATH today. Fix paths: (a) set `OPENAI_API_KEY`, or (b) add an Anthropic backend in `meta_optimizer.py` (~30 lines).
+- **A12 (warm-start wiring):** `/api/scenario/resume/{run_id}` returns a payload and `/api/scenario/start` accepts it, but `simulation_loop` doesn't yet read `active_run["resume_payload"]` and seed orch_state from it. ~20 lines to wire.
+- **A13 (warehouse logic):** `warehouse_restock_threshold` genome field exists but env has no consumer for it yet.
+
 
 ---
 
