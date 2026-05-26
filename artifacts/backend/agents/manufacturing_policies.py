@@ -160,86 +160,86 @@ class ScriptedGreedyPolicy(BasePolicy):
 
     def _procurement_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
         cell = world.grid[agent.row][agent.col]
+        from game_envs.manufacturing_v2.actions import is_adjacent
 
-        replenishment_threshold = int(get_rule("replenishment_urgency_threshold"))
+        # Carrying raw material → deliver to the machine that consumes it.
+        if agent.inventory:
+            target = self._dag_target_machine(agent, world)
+            if target is not None:
+                if is_adjacent(agent.row, agent.col, target.row, target.col):
+                    return {"type": "load_machine", "params": {"machine_id": target.id}}
+                return self._step_toward(agent, target.row, target.col, world)
+            # No machine needs it right now — hold position near a smelter/fab.
+            return {"type": "wait", "params": {}}
 
-        if len(agent.inventory) < agent.carry_capacity():
-            if cell == CellType.LOADING_DOCK and agent.purchase_cooldown == 0:
-                needed = self._most_needed_raw(world)
-                return {"type": "purchase", "params": {"item_type": needed.value, "qty": 1}}
+        # Not carrying → buy at a loading dock, else walk to the nearest one.
+        if cell == CellType.LOADING_DOCK and agent.purchase_cooldown == 0:
+            needed = self._most_needed_raw(world)
+            return {"type": "purchase", "params": {"item_type": needed.value, "qty": 1}}
+        dock_pos = self._nearest_cell_of_type(agent, world, CellType.LOADING_DOCK) or world._find_loading_dock()
+        return self._step_toward(agent, dock_pos[0], dock_pos[1], world)
+
+    def _operations_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
+        from game_envs.manufacturing_v2.actions import is_adjacent
 
         if agent.inventory:
-            target = self._nearest_machine_needing_input(agent, world, input_threshold=replenishment_threshold)
-            if target:
-                return {"type": "deliver_to_machine", "params": {"machine_id": target.id}}
+            carried = agent.inventory[0].item_type
+            # Scrap exception (spec §2.1): reject items go to the shipping dock.
+            if carried == ItemType.REJECT:
+                dock = world._find_shipping_dock()
+                if (agent.row, agent.col) == dock or is_adjacent(agent.row, agent.col, dock[0], dock[1]):
+                    return {"type": "drop", "params": {}}
+                return self._step_toward(agent, dock[0], dock[1], world)
+            target = self._dag_target_machine(agent, world)
+            if target is not None:
+                if is_adjacent(agent.row, agent.col, target.row, target.col):
+                    return {"type": "load_machine", "params": {"machine_id": target.id}}
+                return self._step_toward(agent, target.row, target.col, world)
+            return {"type": "wait", "params": {}}
 
-        dock_pos = world._find_loading_dock()
-        if (agent.row, agent.col) != dock_pos:
-            return {"type": "go_to", "params": {"row": dock_pos[0], "col": dock_pos[1]}}
+        # Empty-handed → pull output from the nearest machine with goods ready.
+        output_ready = [m for m in world.machines.values() if m.state == MachineState.OUTPUT_READY and m.output_queue]
+        if output_ready:
+            nearest = min(output_ready, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
+            if is_adjacent(agent.row, agent.col, nearest.row, nearest.col):
+                return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
+            return self._step_toward(agent, nearest.row, nearest.col, world)
+
+        # Pick up any loose item on the floor (e.g. a dropped intermediate).
+        floor_items = [i for i in world.items.values()
+                       if i.carrier_id is None and i.row is not None and i.item_type != ItemType.REJECT]
+        if floor_items:
+            nearest = min(floor_items, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
+            if (agent.row, agent.col) == (nearest.row, nearest.col):
+                return {"type": "pickup", "params": {"item_id": nearest.id}}
+            return self._step_toward(agent, nearest.row, nearest.col, world)
 
         return {"type": "wait", "params": {}}
 
-    def _operations_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
-        pickup_radius = get_rule("operations_pickup_radius")
-
-        if agent.inventory:
-            target = self._nearest_machine_needing_input(agent, world)
-            if target:
-                return {"type": "deliver_to_machine", "params": {"machine_id": target.id}}
-            return {"type": "go_to", "params": {"row": agent.row, "col": agent.col}}
-
-        output_ready = [m for m in world.machines.values() if m.state == MachineState.OUTPUT_READY]
-        if output_ready:
-            nearest = min(output_ready, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
-            if pickup_radius is not None:
-                dist = abs(nearest.row - agent.row) + abs(nearest.col - agent.col)
-                if dist > int(pickup_radius):
-                    output_ready = []
-            if output_ready:
-                adj = self._find_adjacent_floor(nearest, world)
-                if adj and (agent.row, agent.col) in [adj]:
-                    return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
-                if adj:
-                    return {"type": "go_to", "params": {"row": adj[0], "col": adj[1]}}
-
-        floor_items = [i for i in world.items.values() if i.carrier_id is None and i.row is not None]
-        if floor_items:
-            if pickup_radius is not None:
-                floor_items = [
-                    i for i in floor_items
-                    if abs(i.row - agent.row) + abs(i.col - agent.col) <= int(pickup_radius)
-                ]
-            if floor_items:
-                nearest = min(floor_items, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
-                return {"type": "pickup_nearest", "params": {"item_type": nearest.item_type.value}}
-
-        return self._wander(agent)
-
     def _engineering_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
+        from game_envs.manufacturing_v2.actions import is_adjacent
         idle_repair_trigger = int(get_rule("engineering_idle_repair_trigger"))
 
         broken = [m for m in world.machines.values() if m.state == MachineState.BROKEN]
         if len(broken) > idle_repair_trigger:
             nearest = min(broken, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
-            adj = self._find_adjacent_floor(nearest, world)
-            from game_envs.manufacturing_v2.actions import is_adjacent
             if is_adjacent(agent.row, agent.col, nearest.row, nearest.col):
                 return {"type": "repair", "params": {"machine_id": nearest.id}}
-            if adj:
-                return {"type": "go_to", "params": {"row": adj[0], "col": adj[1]}}
+            return self._step_toward(agent, nearest.row, nearest.col, world)
 
         return {"type": "wait", "params": {}}
 
     def _sales_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
         cell = world.grid[agent.row][agent.col]
-
-        if agent.inventory and cell == CellType.SHIPPING_DOCK:
-            return {"type": "sell", "params": {}}
+        from game_envs.manufacturing_v2.actions import is_adjacent
 
         if agent.inventory:
-            dock_pos = world._find_shipping_dock()
-            return {"type": "go_to", "params": {"row": dock_pos[0], "col": dock_pos[1]}}
+            if cell == CellType.SHIPPING_DOCK:
+                return {"type": "sell", "params": {}}
+            dock_pos = self._nearest_cell_of_type(agent, world, CellType.SHIPPING_DOCK) or world._find_shipping_dock()
+            return self._step_toward(agent, dock_pos[0], dock_pos[1], world)
 
+        # Pick up finished goods: from the floor, or unload them from Packaging.
         finished = [
             i for i in world.items.values()
             if i.carrier_id is None and i.row is not None
@@ -247,22 +247,21 @@ class ScriptedGreedyPolicy(BasePolicy):
         ]
         if finished:
             nearest = min(finished, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
-            return {"type": "pickup_nearest", "params": {"item_type": ItemType.FINISHED_PRODUCT.value}}
+            if (agent.row, agent.col) == (nearest.row, nearest.col):
+                return {"type": "pickup", "params": {"item_id": nearest.id}}
+            return self._step_toward(agent, nearest.row, nearest.col, world)
 
         output_packaging = [
             m for m in world.machines.values()
-            if m.machine_type == MachineType.PACKAGING and m.state == MachineState.OUTPUT_READY
+            if m.machine_type == MachineType.PACKAGING and m.state == MachineState.OUTPUT_READY and m.output_queue
         ]
         if output_packaging:
             nearest = min(output_packaging, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
-            adj = self._find_adjacent_floor(nearest, world)
-            from game_envs.manufacturing_v2.actions import is_adjacent
             if is_adjacent(agent.row, agent.col, nearest.row, nearest.col):
                 return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
-            if adj:
-                return {"type": "go_to", "params": {"row": adj[0], "col": adj[1]}}
+            return self._step_toward(agent, nearest.row, nearest.col, world)
 
-        return self._wander(agent)
+        return {"type": "wait", "params": {}}
 
     def _management_action(self, agent: Agent, obs: dict, world: "WorldModel") -> dict:
         hire_eng_threshold = int(get_rule("management_hire_engineer_threshold"))
@@ -285,27 +284,53 @@ class ScriptedGreedyPolicy(BasePolicy):
         return {"type": "view_financials", "params": {}}
 
     def _most_needed_raw(self, world: "WorldModel") -> ItemType:
+        # Smelter consumes 2 ore per ingot, so ore demand is double silicon's.
+        # Count machine queues, floor stock AND in-transit material carried by
+        # every agent — otherwise multiple procurement agents all pick the same
+        # raw at once and starve the other line.
         smelter_queue = sum(
             len(m.input_queue) for m in world.machines.values() if m.machine_type == MachineType.SMELTER
         )
         circuit_queue = sum(
             len(m.input_queue) for m in world.machines.values() if m.machine_type == MachineType.CIRCUIT_FAB
         )
+        ore_in_transit = silicon_in_transit = 0
+        for a in world.agents.values():
+            for i in a.inventory:
+                if i.item_type == ItemType.RAW_ORE:
+                    ore_in_transit += 1
+                elif i.item_type == ItemType.RAW_SILICON:
+                    silicon_in_transit += 1
         ore_stock = sum(
             1 for i in world.items.values() if i.item_type == ItemType.RAW_ORE and i.carrier_id is None
         )
         silicon_stock = sum(
             1 for i in world.items.values() if i.item_type == ItemType.RAW_SILICON and i.carrier_id is None
         )
-        if silicon_stock + circuit_queue < ore_stock + smelter_queue:
-            return ItemType.RAW_SILICON
-        return ItemType.RAW_ORE
+        # Ore "supply" is halved because each ingot needs two ore units.
+        ore_supply = (ore_stock + smelter_queue + ore_in_transit) / 2.0
+        silicon_supply = silicon_stock + circuit_queue + silicon_in_transit
+        return ItemType.RAW_ORE if ore_supply <= silicon_supply else ItemType.RAW_SILICON
+
+    def _nearest_cell_of_type(self, agent: Agent, world: "WorldModel", cell_type: CellType) -> Optional[tuple[int, int]]:
+        """Nearest grid cell of a given type — used to spread agents across the
+        multiple loading/shipping dock cells instead of all targeting the first."""
+        best = None
+        best_d = 1e9
+        for r in range(world.rows):
+            for c in range(world.cols):
+                if world.grid[r][c] == cell_type:
+                    d = abs(r - agent.row) + abs(c - agent.col)
+                    if d < best_d:
+                        best_d = d
+                        best = (r, c)
+        return best
 
     def _nearest_machine_needing_input(
         self,
         agent: Agent,
         world: "WorldModel",
-        input_threshold: int = 3,
+        input_threshold: int = 5,
     ) -> Optional[Machine]:
         if not agent.inventory:
             return None
@@ -324,6 +349,43 @@ class ScriptedGreedyPolicy(BasePolicy):
         if not candidates:
             return None
         return min(candidates, key=lambda x: x[0])[1]
+
+    # Alias used by the deterministic role logic — routes a carried item to the
+    # next machine in the production DAG that consumes its type.
+    def _dag_target_machine(self, agent: Agent, world: "WorldModel") -> Optional[Machine]:
+        return self._nearest_machine_needing_input(agent, world, input_threshold=5)
+
+    def _step_toward(self, agent: Agent, tr: int, tc: int, world: "WorldModel") -> dict:
+        """
+        Dynamic single-step navigation: pick the walkable neighbour that most
+        reduces Manhattan distance to (tr, tc), preferring cells not currently
+        occupied by another agent.  Re-evaluated every tick, so it never relies
+        on a stale precomputed path and degrades gracefully under congestion
+        (the world's MAPF resolver handles any residual right-of-way ties).
+        """
+        WALKABLE = {
+            CellType.FLOOR, CellType.CONVEYOR, CellType.LOADING_DOCK,
+            CellType.SHIPPING_DOCK, CellType.STORAGE_ZONE,
+        }
+        occupied = {(a.row, a.col) for a in world.agents.values() if a.id != agent.id}
+        DIRS = {"north": (-1, 0), "south": (1, 0), "east": (0, 1), "west": (0, -1)}
+        best_dir = None
+        best_key = None
+        for dname, (dr, dc) in DIRS.items():
+            nr, nc = agent.row + dr, agent.col + dc
+            if not (0 <= nr < world.rows and 0 <= nc < world.cols):
+                continue
+            if world.grid[nr][nc] not in WALKABLE:
+                continue
+            dist = abs(nr - tr) + abs(nc - tc)
+            # Sort key: prefer distance-reducing, then unoccupied cells.
+            key = (dist, 1 if (nr, nc) in occupied else 0)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_dir = dname
+        if best_dir is None:
+            return {"type": "wait", "params": {}}
+        return {"type": "move", "params": {"direction": best_dir}}
 
     def _find_adjacent_floor(self, machine: Machine, world: "WorldModel") -> Optional[tuple[int, int]]:
         WALKABLE = {

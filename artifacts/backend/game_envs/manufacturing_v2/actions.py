@@ -218,8 +218,8 @@ def apply_micro_action(
             return ActionResult(False, "Not adjacent to machine")
         if machine.state == MachineState.BROKEN:
             return ActionResult(False, "Machine is broken")
-        if len(machine.input_queue) >= 3:
-            return ActionResult(False, "Machine input queue full (max 3)")
+        if len(machine.input_queue) >= 5:
+            return ActionResult(False, "Machine input queue full (max 5)")
         if not agent.inventory:
             return ActionResult(False, "Nothing to load")
         item = agent.inventory.pop(0)

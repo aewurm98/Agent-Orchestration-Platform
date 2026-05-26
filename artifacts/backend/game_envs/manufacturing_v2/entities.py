@@ -92,10 +92,22 @@ ITEM_SALE_PRICE: dict[ItemType, float] = {
     ItemType.REJECT: 5.0,
 }
 
+# Throughput multipliers (legacy: time = base_ticks / mult). Kept for backward
+# compatibility with any external importers. Speed→processing-time is now driven
+# by SPEED_TIME_MULT below (see Machine.base_ticks).
 SPEED_MULTIPLIERS: dict[SpeedMode, float] = {
     SpeedMode.LOW: 0.5,
     SpeedMode.NORMAL: 1.0,
     SpeedMode.HIGH: 1.5,
+}
+
+# Spec §1.3 — processing time multiplier applied to a machine's base tick count:
+#   low  → 1.5× time (slow, cheap, reliable)
+#   high → 0.6× time (fast, 2× power, 2.5× fail rate)
+SPEED_TIME_MULT: dict[SpeedMode, float] = {
+    SpeedMode.LOW: 1.5,
+    SpeedMode.NORMAL: 1.0,
+    SpeedMode.HIGH: 0.6,
 }
 
 SPEED_POWER_MULT: dict[SpeedMode, float] = {
@@ -226,9 +238,11 @@ class Machine:
         return MACHINE_POWER_COST[self.machine_type] * SPEED_POWER_MULT[self.speed_mode]
 
     def base_ticks(self) -> int:
+        # Spec §1.3: processing time = base ticks × speed time-multiplier.
+        # low → 1.5× (slower), high → 0.6× (faster).
         raw = MACHINE_BASE_TICKS[self.machine_type]
-        mult = SPEED_MULTIPLIERS[self.speed_mode]
-        return max(1, int(raw / mult))
+        time_mult = SPEED_TIME_MULT[self.speed_mode]
+        return max(1, round(raw * time_mult))
 
     def failure_rate(self) -> float:
         return MACHINE_BASE_FAILURE_RATE[self.machine_type] * SPEED_FAILURE_MULT[self.speed_mode]

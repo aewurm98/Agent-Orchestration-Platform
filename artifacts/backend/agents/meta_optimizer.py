@@ -43,6 +43,40 @@ def _get_client() -> AsyncOpenAI:
 
 _GENOME_SCHEMAS: dict[str, dict] = {
     "manufacturing": {
+        # Spec §4.2 — full Factory Meta-Optimizer system prompt. When present this
+        # replaces the generic prompt scaffold built in _build_system_prompt.
+        "system_prompt": (
+            "You are the Factory Meta-Optimizer, an AI architect managing a continuous "
+            "manufacturing simulation.\n"
+            "The simulation operates on a fixed 12x12 spatial grid.\n"
+            "Your goal is to maximize the overall Fitness Score over a mini-batch of "
+            "stochastic episodes (1000 ticks each).\n\n"
+            "FITNESS TARGET & ECONOMICS:\n"
+            "The final Fitness Score is a weighted calculation:\n"
+            "(50% Profit) + (30% Throughput) - (15% Missed Orders) - (5% Idle Agents) + (5% Machine Util).\n"
+            "- Revenues: Standard Product (+$200), Rush Order (+$300), Scrap (+$5).\n"
+            "- OpEx: Agent Wages (Eng: $5/t, Sales: $4/t, Proc: $3/t, Ops: $2/t), Material Costs, Machine Power.\n"
+            "- Penalties: Late Delivery (-$20/t), Missed Order (-$50 flat).\n\n"
+            "THE PRODUCTION DAG:\n"
+            "1. Raw Ore -> Smelter -> Ingot\n"
+            "2. Raw Silicon -> Circuit Fab -> Circuit\n"
+            "3. Ingot -> Stamping Press -> Stamped Part\n"
+            "4. (Stamped Part x2 + Circuit x1) -> Assembly -> Subassembly\n"
+            "5. Subassembly -> QC Station -> Inspected Unit\n"
+            "6. Inspected Unit -> Packaging -> Finished Product\n\n"
+            "PHYSICS & TRADEOFFS:\n"
+            "- Agents physically move items on the grid.\n"
+            "- Too many agents = pathfinding traffic jams and bloated wage costs.\n"
+            "- Too few agents = idle machines and supply chain bottlenecks.\n"
+            "- Speed Multipliers: 'low' (slow, cheap, reliable), 'normal', 'high' (fast, 2x power cost, 2.5x fail rate).\n"
+            "- High failure rates require more Engineering agents to repair broken machines, draining wages.\n\n"
+            "YOUR ACTION SPACE (mutate_genome):\n"
+            "Output a single JSON object setting the ENTIRE genome for the next generation.\n"
+            "1. Agent Counts: procurement (1-5), operations (1-8), engineering (1-3), sales (1-4).\n"
+            "2. Machine Speeds: map all 6 machine IDs ('smelter_1','circuit_fab_1','press_1','assembly_1','qc_1','packaging_1') to 'low', 'normal', or 'high'.\n"
+            "3. Order Arrival Rate (5.0 to 30.0). Lower = orders arrive faster. WARNING: accepting too "
+            "many orders when your pipeline is slow causes catastrophic Late/Missed penalties."
+        ),
         "description": (
             "A manufacturing factory grid where agents of five specialised roles "
             "(procurement, operations, engineering, sales, management) coordinate to "
@@ -51,17 +85,16 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "finished goods against time-limited customer orders."
         ),
         "parameters": {
-            "agent_counts.procurement": "integer 1–3 — agents that buy raw materials",
-            "agent_counts.operations": "integer 1–5 — floor workers that move/process items",
-            "agent_counts.engineering": "integer 0–3 — maintenance agents that repair broken machines",
-            "agent_counts.sales": "integer 1–3 — agents that accept and fulfill orders",
-            "agent_counts.management": "integer 1–2 — planning agents that assign tasks",
-            "machine_speeds.*": "string low|normal|high — throughput rate for each machine",
+            "agent_counts.procurement": "integer 1–5 — agents that ferry raw materials from the loading dock",
+            "agent_counts.operations": "integer 1–8 — floor workers that move items between machines",
+            "agent_counts.engineering": "integer 1–3 — maintenance agents that repair broken machines",
+            "agent_counts.sales": "integer 1–4 — agents that deliver finished products against orders",
+            "machine_speeds.*": "string low|normal|high — low: slow/cheap/reliable, high: fast/2× power/2.5× fail",
             "order_arrival_rate": "float 5.0–30.0 — avg ticks between order arrivals (lower = more orders)",
         },
         "return_format": """{
   "reasoning": "<1-2 sentence explanation>",
-  "agent_counts": {"procurement": <int|omit>, "operations": <int|omit>, "engineering": <int|omit>, "sales": <int|omit>, "management": <int|omit>},
+  "agent_counts": {"procurement": <int|omit>, "operations": <int|omit>, "engineering": <int|omit>, "sales": <int|omit>},
   "machine_speeds": {"smelter_1": "<low|normal|high|omit>", "circuit_fab_1": "...", "press_1": "...", "assembly_1": "...", "qc_1": "...", "packaging_1": "..."},
   "order_arrival_rate": <float|null>
 }""",
@@ -133,6 +166,21 @@ def _build_system_prompt(scenario: str) -> str:
     param_lines = "\n".join(
         f"  • {k}: {v}" for k, v in schema["parameters"].items()
     )
+    # Scenario-specific full prompt (spec §4.2) takes precedence when provided;
+    # the JSON return contract and loop rules are always appended.
+    if schema.get("system_prompt"):
+        return (
+            f"{schema['system_prompt']}\n\n"
+            "RESPONSE FORMAT — reply ONLY with a single JSON object, no markdown fences:\n"
+            f"{schema['return_format']}\n\n"
+            "RULES:\n"
+            "  1. Omit any key (except 'reasoning') you do not want to change.\n"
+            "  2. All numeric values must satisfy the stated bounds.\n"
+            "  3. Prefer small incremental changes; avoid large jumps.\n"
+            "  4. If fitness is improving, continue in the same direction.\n"
+            "  5. If stagnating (stagnation_counter > 0), try a different parameter axis.\n"
+            "  6. Never return an empty JSON — always include 'reasoning' and at least one parameter."
+        )
     return (
         f"You are a meta-optimizer for a multi-agent {scenario.replace('_', ' ')} simulation.\n\n"
         f"SCENARIO: {schema['description']}\n\n"
@@ -168,7 +216,25 @@ def build_episode_digest(state: dict, env: Any) -> dict:
     }
 
     scenario = state.get("scenario", "manufacturing")
-    if scenario == "manufacturing" and env is not None and hasattr(env, "world"):
+
+    # Spec §3.1/§4.3: prefer the averaged mini-batch metrics when present (INTER
+    # mode) so the digest reflects the 3-seed aggregate, not one lucky episode.
+    mb_metrics = state.get("minibatch_metrics") or {}
+    if scenario == "manufacturing" and mb_metrics:
+        digest["env_metrics"] = {
+            "episodes": len(mb_metrics.get("seeds", [])) or 3,
+            "ticks_each": mb_metrics.get("ticks"),
+            "avg_profit": mb_metrics.get("avg_profit"),
+            "avg_revenue": mb_metrics.get("avg_revenue"),
+            "avg_penalties": mb_metrics.get("avg_penalties"),
+            "avg_throughput": mb_metrics.get("avg_throughput"),
+            "orders_fulfilled": mb_metrics.get("avg_orders_fulfilled"),
+            "orders_missed": mb_metrics.get("avg_orders_missed"),
+            "miss_rate": mb_metrics.get("miss_rate"),
+            "machine_utilization": mb_metrics.get("avg_machine_utilization"),
+            "agent_idle_ratio": mb_metrics.get("avg_agent_idle_ratio"),
+        }
+    elif scenario == "manufacturing" and env is not None and hasattr(env, "world"):
         try:
             econ = env.world.economy
             pl = econ.pl
@@ -177,7 +243,7 @@ def build_episode_digest(state: dict, env: Any) -> dict:
             digest["env_metrics"] = {
                 "tick": env.world.tick,
                 "profit": round(float(pl.profit), 2),
-                "revenue": round(float(pl.revenue), 2),
+                "revenue": round(float(pl.total_revenue), 2),
                 "penalties": round(float(pl.penalties), 2),
                 "orders_fulfilled": fulfilled,
                 "orders_missed": missed,

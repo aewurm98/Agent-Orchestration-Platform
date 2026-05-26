@@ -20,19 +20,21 @@ from game_envs.manufacturing_v2.scenarios import FIRST_FACTORY_CONFIG
 
 
 SPEED_CYCLE = [SpeedMode.LOW, SpeedMode.NORMAL, SpeedMode.HIGH]
+# Spec §4.1 — genome agent-count boundaries. Management is fixed (not part of
+# the LLM action space) and pinned to a single coordinator agent.
 MIN_AGENT_COUNTS: dict[str, int] = {
     "procurement": 1,
     "operations": 1,
-    "engineering": 0,
+    "engineering": 1,
     "sales": 1,
     "management": 1,
 }
 MAX_AGENT_COUNTS: dict[str, int] = {
-    "procurement": 3,
-    "operations": 5,
+    "procurement": 5,
+    "operations": 8,
     "engineering": 3,
-    "sales": 3,
-    "management": 2,
+    "sales": 4,
+    "management": 1,
 }
 
 

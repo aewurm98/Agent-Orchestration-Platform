@@ -17,7 +17,24 @@ from .entities import (
 )
 from .recipes import RecipeEngine
 from .economics import EconomicModel, MetricsSnapshot
-from .actions import apply_micro_action, decompose_macro_action
+from .actions import apply_micro_action, decompose_macro_action, ActionResult
+
+
+# Spec §2.2 — MAPF right-of-way hierarchy (Sales > Eng > Proc > Ops > Mgmt).
+# Higher number = higher priority; used to resolve agent-on-agent move collisions.
+ROLE_PRIORITY: dict[AgentRole, int] = {
+    AgentRole.SALES: 4,
+    AgentRole.ENGINEERING: 3,
+    AgentRole.PROCUREMENT: 2,
+    AgentRole.OPERATIONS: 1,
+    AgentRole.MANAGEMENT: 0,
+}
+
+_WALKABLE_CELLS = {
+    CellType.FLOOR, CellType.CONVEYOR, CellType.LOADING_DOCK,
+    CellType.SHIPPING_DOCK, CellType.STORAGE_ZONE,
+}
+_MOVE_DIRS = {"north": (-1, 0), "south": (1, 0), "east": (0, 1), "west": (0, -1)}
 
 
 class WorldModel:
@@ -144,12 +161,18 @@ class WorldModel:
             for item in produced:
                 self.items[item.id] = item
 
-        # ── 3. Determine action order based on execution_mode ─────────────────
+        # ── 3. Determine action order ─────────────────────────────────────────
+        # Spec §2.2: resolve MAPF ties by hardcoded hierarchy — high-priority
+        # agents move first and claim cells, so lower-priority agents yield.
         if self.execution_mode == "sync":
             action_order = sorted(self.agents.keys())
         else:
             action_order = list(self.agents.keys())
             self.rng.shuffle(action_order)
+        action_order.sort(
+            key=lambda aid: ROLE_PRIORITY.get(self.agents[aid].role, 0),
+            reverse=True,
+        )
 
         # ── 4. Apply agent actions ────────────────────────────────────────────
         for agent_id in action_order:
@@ -166,6 +189,7 @@ class WorldModel:
 
             if agent.action_buffer:
                 action = agent.action_buffer.pop(0)
+                action["_from_buffer"] = True
             elif submitted_actions and agent_id in submitted_actions:
                 raw = submitted_actions[agent_id]
                 if raw.get("type") in (
@@ -187,18 +211,29 @@ class WorldModel:
             if action is None:
                 action = {"type": "wait", "params": {}}
 
-            result = apply_micro_action(
-                agent=agent,
-                action_type=action["type"],
-                params=action.get("params", {}),
-                grid=self.grid,
-                machines=self.machines,
-                items=self.items,
-                agents=self.agents,
-                alerts=alerts,
-            )
+            # Spec §2.2: move actions go through MAPF right-of-way resolution.
+            from_buffer = action.get("_from_buffer", False)
+            if action["type"] == "move":
+                result, yielded = self._resolve_move(
+                    agent, action.get("params", {}).get("direction", "")
+                )
+                # If the agent yielded to traffic, re-queue this path step so it
+                # retries next tick instead of skipping ahead and losing its route.
+                if yielded and from_buffer:
+                    agent.action_buffer.insert(0, action)
+            else:
+                result = apply_micro_action(
+                    agent=agent,
+                    action_type=action["type"],
+                    params=action.get("params", {}),
+                    grid=self.grid,
+                    machines=self.machines,
+                    items=self.items,
+                    agents=self.agents,
+                    alerts=alerts,
+                )
 
-            if not result.ok and action["type"] not in ("wait", "idle"):
+            if not result.ok and action["type"] not in ("wait", "idle", "move"):
                 agent.state = AgentState.IDLE
 
             if action["type"] == "sell" and result.ok:
@@ -299,7 +334,10 @@ class WorldModel:
             alerts.append(warn)
 
         # ── 9. Check terminal conditions ───────────────────────────────────────
-        if self.tick >= self.simulation_length or self.economy.budget <= 0:
+        # Spec §2.2 run_episode loops over the full tick budget; the ledger may go
+        # negative (that is reflected as negative Profit in fitness) without ending
+        # the episode early.  Termination is purely tick-based.
+        if self.tick >= self.simulation_length:
             self.done = True
 
         # ── 10. Price fluctuation ──────────────────────────────────────────────
@@ -308,6 +346,64 @@ class WorldModel:
         self._pending_alerts = alerts
         self._action_results = action_results
         return {"alerts": alerts, "action_results": action_results}
+
+    # ── MAPF move resolution (spec §2.2) ───────────────────────────────────────
+
+    def _is_walkable(self, r: int, c: int) -> bool:
+        return (
+            0 <= r < self.rows and 0 <= c < self.cols
+            and self.grid[r][c] in _WALKABLE_CELLS
+        )
+
+    def _agent_at(self, r: int, c: int, exclude: str) -> Optional[Agent]:
+        for a in self.agents.values():
+            if a.id != exclude and a.row == r and a.col == c:
+                return a
+        return None
+
+    def _shove_to_adjacent_empty(self, occupant: Agent, forbidden: set[tuple[int, int]]) -> bool:
+        """Move an idle occupant to any adjacent empty walkable cell. Returns success."""
+        for dr, dc in _MOVE_DIRS.values():
+            nr, nc = occupant.row + dr, occupant.col + dc
+            if (nr, nc) in forbidden:
+                continue
+            if self._is_walkable(nr, nc) and self._agent_at(nr, nc, occupant.id) is None:
+                occupant.row, occupant.col = nr, nc
+                occupant.state = AgentState.MOVING
+                return True
+        return False
+
+    def _resolve_move(self, agent: Agent, direction: str) -> tuple[ActionResult, bool]:
+        """
+        Resolve a single move with right-of-way rules.  Returns (result, yielded)
+        where `yielded` is True when the agent deferred to traffic and should
+        retry the same step next tick.
+        """
+        if direction not in _MOVE_DIRS:
+            return ActionResult(False, f"Unknown direction: {direction}"), False
+        dr, dc = _MOVE_DIRS[direction]
+        nr, nc = agent.row + dr, agent.col + dc
+        if not self._is_walkable(nr, nc):
+            return ActionResult(False, f"Cell ({nr},{nc}) not walkable"), False
+
+        occ = self._agent_at(nr, nc, agent.id)
+        if occ is None:
+            agent.row, agent.col = nr, nc
+            agent.state = AgentState.MOVING
+            return ActionResult(True, f"Moved {direction} to ({nr},{nc})"), False
+
+        # Cell occupied — apply right-of-way.
+        my_pri = ROLE_PRIORITY.get(agent.role, 0)
+        occ_pri = ROLE_PRIORITY.get(occ.role, 0)
+        if my_pri > occ_pri and occ.state in (AgentState.IDLE, AgentState.STANDBY):
+            # Higher priority shoves an idle occupant out of the way.
+            if self._shove_to_adjacent_empty(occ, forbidden={(agent.row, agent.col), (nr, nc)}):
+                agent.row, agent.col = nr, nc
+                agent.state = AgentState.MOVING
+                return ActionResult(True, f"Moved {direction} (shoved {occ.id})"), False
+        # Otherwise yield for one tick and retry.
+        agent.state = AgentState.IDLE
+        return ActionResult(False, "Yielded right-of-way"), True
 
     # ── Order / economy helpers ────────────────────────────────────────────────
 

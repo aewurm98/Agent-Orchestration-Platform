@@ -44,6 +44,55 @@ export type GameState = {
   };
   score: number;
   tick: number;
+  // Supply Chain v2 — rich real-time payload (terrain grid, nodes, trucks, GLS).
+  sc?: SupplyChainV2State;
+};
+
+export type SCNode = {
+  id: string;
+  kind: "supplier" | "demand" | "warehouse";
+  x: number;
+  y: number;
+  stock?: number;
+  accumulated_demand?: number;
+  price?: number;
+  shocked?: boolean;
+  served?: number;
+  inventory?: number;
+  capacity?: number;
+  full?: boolean;
+};
+
+export type SCTruck = {
+  id: string;
+  x: number;
+  y: number;
+  state: "AUTOPILOT" | "THINKING" | "EXECUTING_OVERRIDE";
+  cargo: number;
+  capacity: number;
+  cargo_health: number;
+  ledger: number;
+  target: string | null;
+  mission: string;
+  risk: string;
+  greed: string;
+  last_event: string;
+};
+
+export type SupplyChainV2State = {
+  grid: string[][];
+  nodes: SCNode[];
+  trucks: SCTruck[];
+  gls: number;
+  revenue: number;
+  capex: number;
+  opex: number;
+  penalties: number;
+  capital: number;
+  fleet: number;
+  episode_ticks: number;
+  alerts: string[];
+  director_log: Array<{ tick: number; note: string }>;
 };
 
 export type MfgV2Agent = {

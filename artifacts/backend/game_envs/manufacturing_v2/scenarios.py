@@ -1,13 +1,11 @@
 """
 Pre-built scenario configurations for the Manufacturing v2 simulation.
 
-FIRST_FACTORY_CONFIG  — Canonical "spec §12 First Factory" default used by
-                        /api/mfg/reset, the simulation loop, and EA evaluation.
-                        Layout: 10×14 · Loading docks (left edge, col 0) ·
-                        Shipping docks (right edge, col 13) · Left-to-right
-                        production flow: raw processing (col 3) → mid processing
-                        (col 7) → finishing (col 11) → output · 10 machines ·
-                        8 agents · $8,000 · 300 ticks · random seed 42.
+FIRST_FACTORY_CONFIG  — Canonical spec v2 §1.2 "Fixed Factory Floorplan".
+                        12×12 discrete grid with a walled border.  Loading docks
+                        on the left edge (col 0, rows 1–3), shipping docks on the
+                        right edge (col 11, rows 4–6).  Six machines, one of each
+                        type, at the spec's fixed coordinates.  1000-tick episodes.
 
 FIRST_FACTORY_SEEDED_CONFIG — Alias of FIRST_FACTORY_CONFIG retained for
                         backward-compatible imports in unit tests.
@@ -21,96 +19,78 @@ from .entities import (
 )
 
 
-# ── Spec §12 First Factory ────────────────────────────────────────────────────
+# ── Spec v2 §1.2 Fixed Factory Floorplan ──────────────────────────────────────
 #
-# Grid: 10 rows × 14 cols.  Flow direction: LEFT (input) → RIGHT (output).
+#    0 1 2 3 4 5 6 7 8 9 0 1   (columns 0-11)
+#  0 W W W W W W W W W W W W
+#  1 L . . . . . . . . . . W
+#  2 L . S . . . P . . . . W      S = Smelter (2,2)   P = Stamping Press (2,6)
+#  3 L . . . . . . . . . . W
+#  4 W . . . . . . . . . . S
+#  5 W . F . . . A . . . . S      F = Circuit Fab (5,2)  A = Assembly (5,6)
+#  6 W . . . . . . . . . . S
+#  7 W . . . . . Q . . . . W      Q = QC Station (7,6)
+#  8 W . . . . . . . . . . W
+#  9 W . . . . . K . . . . W      K = Packaging (9,6)
+# 10 W . . . . . . . . . . W
+# 11 W W W W W W W W W W W W
 #
-# Machine columns:
-#   Col  3 — Raw processing:  smelter×2, circuit_fab×1
-#   Col  7 — Mid processing:  press×2, assembly×1
-#   Col 11 — Finishing:       qc×2, packaging×2
-#
-# Conveyor rows connect adjacent machine columns so items can be routed.
-# Storage zones between columns provide drop-off buffers.
-# Wall pairs at (4-5, 1) and (2-3, 12) create routing interest.
-#
-# Pipeline bootstrap items:
-#   pre_finished_1    — FINISHED_PRODUCT in packaging_1 output queue;
-#                       sales_1 sells at tick 3 → throughput = 1.
-#   pre_subassembly_1 — SUBASSEMBLY in qc_1 processing, 2 ticks remaining.
+# Machine coordinates are (row, col).  Interaction happens from adjacent floor.
+def _build_cell_overrides() -> dict:
+    overrides: dict[tuple[int, int], CellType] = {}
+    # Top & bottom border walls (full rows)
+    for c in range(12):
+        overrides[(0, c)] = CellType.WALL
+        overrides[(11, c)] = CellType.WALL
+    # Left edge: loading docks rows 1-3, walls rows 4-10
+    overrides[(1, 0)] = CellType.LOADING_DOCK
+    overrides[(2, 0)] = CellType.LOADING_DOCK
+    overrides[(3, 0)] = CellType.LOADING_DOCK
+    for r in range(4, 11):
+        overrides[(r, 0)] = CellType.WALL
+    # Right edge: shipping docks rows 4-6, walls rows 1-3 and 7-10
+    for r in (1, 2, 3, 7, 8, 9, 10):
+        overrides[(r, 11)] = CellType.WALL
+    overrides[(4, 11)] = CellType.SHIPPING_DOCK
+    overrides[(5, 11)] = CellType.SHIPPING_DOCK
+    overrides[(6, 11)] = CellType.SHIPPING_DOCK
+    return overrides
+
+
 FIRST_FACTORY_CONFIG: dict = {
     "scenario_name": "first_factory",
     # ── Grid ──────────────────────────────────────────────────────────────────
-    "grid_rows": 10,
-    "grid_cols": 14,
-    # ── Economy ───────────────────────────────────────────────────────────────
-    "starting_budget": 8_000.0,
-    "simulation_length": 300,
+    "grid_rows": 12,
+    "grid_cols": 12,
+    # ── Economy / episode ──────────────────────────────────────────────────────
+    "starting_budget": 10_000.0,
+    "simulation_length": 1000,          # spec §0 — 1000-tick episodes
     "order_arrival_rate": 12,
     "random_seed": 42,
     "execution_mode": "async_buffered",
-    # ── Cell layout ───────────────────────────────────────────────────────────
-    "cell_overrides": {
-        # Loading docks — LEFT edge (input)
-        (0, 0): CellType.LOADING_DOCK,
-        (1, 0): CellType.LOADING_DOCK,
-        (2, 0): CellType.LOADING_DOCK,
-        # Shipping docks — RIGHT edge (output)
-        (7, 13): CellType.SHIPPING_DOCK,
-        (8, 13): CellType.SHIPPING_DOCK,
-        (9, 13): CellType.SHIPPING_DOCK,
-        # Conveyors — flow lanes between machine columns
-        (1, 4): CellType.CONVEYOR, (1, 5): CellType.CONVEYOR, (1, 6): CellType.CONVEYOR,
-        (2, 8): CellType.CONVEYOR, (2, 9): CellType.CONVEYOR, (2, 10): CellType.CONVEYOR,
-        (5, 4): CellType.CONVEYOR, (5, 5): CellType.CONVEYOR, (5, 6): CellType.CONVEYOR,
-        (6, 8): CellType.CONVEYOR, (6, 9): CellType.CONVEYOR, (6, 10): CellType.CONVEYOR,
-        (7, 12): CellType.CONVEYOR,
-        (8, 12): CellType.CONVEYOR,
-        # Storage zones — inter-column buffers
-        (3, 5): CellType.STORAGE_ZONE,
-        (4, 5): CellType.STORAGE_ZONE,
-        (3, 9): CellType.STORAGE_ZONE,
-        (4, 9): CellType.STORAGE_ZONE,
-        (6, 9): CellType.STORAGE_ZONE,
-        # Walls — routing challenge
-        (4, 1): CellType.WALL,
-        (5, 1): CellType.WALL,
-        (2, 12): CellType.WALL,
-        (3, 12): CellType.WALL,
-    },
-    # ── Machines ──────────────────────────────────────────────────────────────
+    # ── Cell layout ─────────────────────────────────────────────────────────────
+    "cell_overrides": _build_cell_overrides(),
+    # ── Machines (one of each type, spec coordinates) ───────────────────────────
     "machines": [
-        # Column 1 — Raw processing (col 3)
-        {"id": "smelter_1",     "type": MachineType.SMELTER,          "row": 1, "col": 3, "speed": SpeedMode.NORMAL},
-        {"id": "smelter_2",     "type": MachineType.SMELTER,          "row": 5, "col": 3, "speed": SpeedMode.NORMAL},
-        {"id": "circuit_fab_1", "type": MachineType.CIRCUIT_FAB,      "row": 7, "col": 3, "speed": SpeedMode.NORMAL},
-        # Column 2 — Mid processing (col 7)
-        {"id": "press_1",       "type": MachineType.STAMPING_PRESS,   "row": 2, "col": 7, "speed": SpeedMode.NORMAL},
-        {"id": "press_2",       "type": MachineType.STAMPING_PRESS,   "row": 5, "col": 7, "speed": SpeedMode.NORMAL},
-        {"id": "assembly_1",    "type": MachineType.ASSEMBLY_STATION, "row": 8, "col": 7, "speed": SpeedMode.NORMAL},
-        # Column 3 — Finishing (col 11)
-        {"id": "qc_1",          "type": MachineType.QC,               "row": 2, "col": 11, "speed": SpeedMode.NORMAL},
-        {"id": "qc_2",          "type": MachineType.QC,               "row": 6, "col": 11, "speed": SpeedMode.NORMAL},
-        {"id": "packaging_1",   "type": MachineType.PACKAGING,        "row": 7, "col": 11, "speed": SpeedMode.NORMAL},
-        {"id": "packaging_2",   "type": MachineType.PACKAGING,        "row": 8, "col": 11, "speed": SpeedMode.NORMAL},
+        {"id": "smelter_1",     "type": MachineType.SMELTER,          "row": 2, "col": 2, "speed": SpeedMode.NORMAL},
+        {"id": "press_1",       "type": MachineType.STAMPING_PRESS,   "row": 2, "col": 6, "speed": SpeedMode.NORMAL},
+        {"id": "circuit_fab_1", "type": MachineType.CIRCUIT_FAB,      "row": 5, "col": 2, "speed": SpeedMode.NORMAL},
+        {"id": "assembly_1",    "type": MachineType.ASSEMBLY_STATION, "row": 5, "col": 6, "speed": SpeedMode.NORMAL},
+        {"id": "qc_1",          "type": MachineType.QC,               "row": 7, "col": 6, "speed": SpeedMode.NORMAL},
+        {"id": "packaging_1",   "type": MachineType.PACKAGING,        "row": 9, "col": 6, "speed": SpeedMode.NORMAL},
     ],
-    # ── Agents ────────────────────────────────────────────────────────────────
+    # ── Agents (default fleet; genome.to_env_config rebuilds counts per genome) ─
     "agents": [
-        # Procurement — starts at loading docks (input side)
-        {"id": "procurement_1", "role": AgentRole.PROCUREMENT, "row": 0, "col": 0},
+        {"id": "procurement_1", "role": AgentRole.PROCUREMENT, "row": 1, "col": 0},
         {"id": "procurement_2", "role": AgentRole.PROCUREMENT, "row": 2, "col": 0},
-        # Operations — move items between machine columns
-        {"id": "operations_1",  "role": AgentRole.OPERATIONS,  "row": 1, "col": 5},
-        {"id": "operations_2",  "role": AgentRole.OPERATIONS,  "row": 5, "col": 5},
-        {"id": "operations_3",  "role": AgentRole.OPERATIONS,  "row": 7, "col": 9},
-        # Engineering — repair machines (stationed near raw column)
-        {"id": "engineering_1", "role": AgentRole.ENGINEERING, "row": 4, "col": 3},
-        # Sales — near shipping docks (output side)
-        {"id": "sales_1",       "role": AgentRole.SALES,       "row": 9, "col": 12},
-        # Management — center of factory floor
-        {"id": "management_1",  "role": AgentRole.MANAGEMENT,  "row": 4, "col": 7},
+        {"id": "operations_1",  "role": AgentRole.OPERATIONS,  "row": 3, "col": 3},
+        {"id": "operations_2",  "role": AgentRole.OPERATIONS,  "row": 4, "col": 5},
+        {"id": "operations_3",  "role": AgentRole.OPERATIONS,  "row": 6, "col": 6},
+        {"id": "engineering_1", "role": AgentRole.ENGINEERING, "row": 4, "col": 4},
+        {"id": "sales_1",       "role": AgentRole.SALES,       "row": 6, "col": 9},
+        {"id": "management_1",  "role": AgentRole.MANAGEMENT,  "row": 5, "col": 5},
     ],
-    # ── Pipeline bootstrap ────────────────────────────────────────────────────
+    # ── Pipeline bootstrap — seed one finished product so sales has early work ──
     "preloaded_items": [
         {
             "id": "pre_finished_1",
@@ -118,16 +98,9 @@ FIRST_FACTORY_CONFIG: dict = {
             "in_machine": "packaging_1",
             "queue": "output",
         },
-        {
-            "id": "pre_subassembly_1",
-            "type": ItemType.SUBASSEMBLY,
-            "in_machine": "qc_1",
-            "queue": "processing",
-        },
     ],
     "initial_machine_states": [
         {"id": "packaging_1", "state": MachineState.OUTPUT_READY, "processing_ticks_remaining": 0},
-        {"id": "qc_1",        "state": MachineState.PROCESSING,   "processing_ticks_remaining": 2},
     ],
 }
 
