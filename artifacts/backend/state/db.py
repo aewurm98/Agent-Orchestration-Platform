@@ -4,6 +4,7 @@ Models: workflows, generations, traces.
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import select
 
-DATABASE_URL = "sqlite+aiosqlite:///./arena.db"
+DATABASE_URL = os.environ.get("ARENA_DB_URL", "sqlite+aiosqlite:///./arena.db")
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
