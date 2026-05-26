@@ -26,10 +26,69 @@ def test_apply_genome_sets_fleet_and_overrides():
     assert len(env.trucks) == 5, f"expected 5 trucks, got {len(env.trucks)}"
     assert env._supply_gen_units == 25
     assert env._truck_capacity == 30
-    # warehouse_restock_threshold is accepted but intentionally not stored —
-    # reserved for future warehouse logic (action A13). This test asserts the
-    # field is silently ignored, not raised, and documents the current contract.
-    assert not hasattr(env, "_warehouse_restock_threshold")
+    assert env._warehouse_restock_threshold == 0.45
+
+
+def test_apply_genome_clamps_threshold_to_unit_interval():
+    env = SupplyChainEnv()
+    env.apply_genome({"warehouse_restock_threshold": 1.5})
+    assert env._warehouse_restock_threshold == 1.0
+    env.apply_genome({"warehouse_restock_threshold": -0.5})
+    assert env._warehouse_restock_threshold == 0.0
+
+
+def test_default_network_includes_warehouse():
+    env = SupplyChainEnv()
+    warehouses = [n for n in env.nodes.values() if n.kind == "warehouse"]
+    assert len(warehouses) == 1, f"expected 1 default warehouse, got {len(warehouses)}"
+    wh = warehouses[0]
+    # Starts full so the threshold rule is dormant by default.
+    assert wh.inventory == wh.capacity > 0
+
+
+def test_restock_divert_routes_truck_to_warehouse():
+    """When a cargo-carrying truck would otherwise head to a demand zone, a
+    warehouse below threshold should win the route."""
+    env = SupplyChainEnv()
+    env.apply_genome({"warehouse_restock_threshold": 0.3})
+    wh = env.nodes["warehouse_0"]
+    wh.inventory = 5  # 5/60 ≈ 8% — well below 30% threshold
+
+    t = env.trucks[0]
+    t.cargo = 10  # truck has cargo so normally heads to demand
+    env._assign_mission_target(t)
+
+    assert t.mission == "to_warehouse"
+    assert t.target_id == "warehouse_0"
+
+
+def test_restock_divert_skips_full_warehouse():
+    env = SupplyChainEnv()
+    env.apply_genome({"warehouse_restock_threshold": 0.9})  # very aggressive
+    wh = env.nodes["warehouse_0"]
+    wh.inventory = wh.capacity  # full — even above an aggressive threshold
+
+    t = env.trucks[0]
+    t.cargo = 10
+    env._assign_mission_target(t)
+
+    assert t.mission == "to_demand", (
+        f"truck should head to demand when warehouse is full, got mission={t.mission}"
+    )
+
+
+def test_restock_threshold_zero_disables_divert():
+    env = SupplyChainEnv()
+    env.apply_genome({"warehouse_restock_threshold": 0.0})
+    wh = env.nodes["warehouse_0"]
+    wh.inventory = 0  # empty warehouse
+
+    t = env.trucks[0]
+    t.cargo = 10
+    env._assign_mission_target(t)
+
+    # Threshold 0.0 disables the divert entirely.
+    assert t.mission == "to_demand"
 
 
 def test_apply_genome_partial_leaves_unset_fields_alone():

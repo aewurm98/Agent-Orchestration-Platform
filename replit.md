@@ -35,9 +35,12 @@ Required env vars:
 - **INTRA** — single environment, continuous evolution within one scenario
 - **INTER** — cross-environment evolution; topology transfers between scenario resets
 
-### Mutation Strategies
+### Mutation Strategies (engines)
 - **MATH** — deterministic genome mutation via `ManufacturingGenome.mutate()`
-- **LLM** — LangGraph orchestrator drives mutation reasoning (requires `ANTHROPIC_API_KEY`)
+- **DEAP** — population-based EA (selection + crossover + mutation) via `agents/ea_integration.py`
+- **LLM** — LangGraph orchestrator drives mutation reasoning (auto-detects `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`)
+
+See `docs/EA_ENGINE.md` for the end-user reference (how to enable each engine, knob table, resume protocol, cost expectations, troubleshooting).
 
 ### Scenarios
 - **Supply Chain** — grid-based logistics agents

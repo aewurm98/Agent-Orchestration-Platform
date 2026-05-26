@@ -186,16 +186,97 @@ Branch is now ahead of `ui-upgrade-v2` by 3 commits. Working tree clean.
 - **A14 (DevOps / Backend lead):** Branch `ea-engine-v1` has 3 commits ahead of `ui-upgrade-v2`. When ready to merge: PR or fast-forward into `ui-upgrade-v2`, then merge that into `main` per existing flow. No conflicts expected with `ui-upgrade-v2` because the pre-EA WIP commit captured everything that was in the working tree.
 
 ### What's still open (deferred / non-blocking)
-- **Phase 6 — Tests:** No pytest suite for the EA path yet. Smoke tests pass; we have not written formal unit tests for encode/decode determinism, crossover correctness, fitness monotonicity under elitism, etc. ~1 hr to deliver.
-- **Phase 7 — Frontend UI toggle for engine selection:** Deferred per A6 direction; today the engine is set via API param or env var.
-- **Phase 8 — Docs + deploy notes:** Plans are in `plans/`; a separate `docs/EA_ENGINE.md` aimed at end users (how to enable DEAP, how to read /api/ea/generations, etc.) would help if this ships externally.
-- **A11 (LLM provider):** `meta_optimizer.py` is OpenAI-only; project Secrets has Anthropic only. The LLM strategy silently falls back to MATH today. Fix paths: (a) set `OPENAI_API_KEY`, or (b) add an Anthropic backend in `meta_optimizer.py` (~30 lines).
-- **A12 (warm-start wiring):** `/api/scenario/resume/{run_id}` returns a payload and `/api/scenario/start` accepts it, but `simulation_loop` doesn't yet read `active_run["resume_payload"]` and seed orch_state from it. ~20 lines to wire.
-- **A13 (warehouse logic):** `warehouse_restock_threshold` genome field exists but env has no consumer for it yet.
+*Last revised 2026-05-26 — see Phase 4 below for the items now closed.*
+
+- **A14 push:** Local fast-forward of `ea-engine-v1` → `ui-upgrade-v2` is done (both at the same SHA). Neither branch is pushed to `origin`. When ready: `git push origin ui-upgrade-v2` then merge into `main` via the existing flow.
+
+---
+
+## Phase 4 — A11/A12/A14 + Phase 6/7/8 + A13 MVP  ✅ Complete
+
+Single session 2026-05-26: closed all four high-leverage items from the
+next-session pickup doc, plus A13 MVP, Phase 7 (UI toggle), and Phase 8 (user docs).
+
+### A11 — Anthropic backend in meta_optimizer  ✅
+- `artifacts/backend/agents/meta_optimizer.py`:
+  - Added `_resolve_provider()` precedence: `META_OPTIMIZER_PROVIDER` env var → `OPENAI_API_KEY` → `ANTHROPIC_API_KEY`.
+  - Split `_get_client()` into `_get_openai_client()` + `_get_anthropic_client()` factories. Back-compat shim retained.
+  - New `_chat_openai()` / `_chat_anthropic()` adapters; `query_meta_optimizer` dispatches by provider.
+  - Anthropic default model: `claude-haiku-4-5`. OpenAI default: `gpt-4o-mini`. Override via `META_OPTIMIZER_MODEL`.
+- **Verified:** live Anthropic call with a manufacturing digest returned a parseable genome delta (`reasoning`, `agent_counts`, `order_arrival_rate`).
+
+### A12 — Warm-start wiring in simulation_loop  ✅
+- `artifacts/backend/main.py`:
+  - New `_apply_resume_payload(orch_state, run_id)` helper. Reads `active_run["resume_payload"]`, copies `gen_id`, `accepted_fitness`, `child_fitness`, `stagnation`, `mutation_strategy`, `genome_json` into orch_state. Appends a `system` trace event. Wrapped in try/except so a malformed payload never crashes the loop.
+  - Called at the manufacturing orch_state init site and at the non-manufacturing orch_state init site. For non-mfg scenarios, the saved genome is also re-applied to the freshly built env via `env.apply_genome(...)`.
+- **Verified:** unit-checked the cold (no payload), warm (full payload), and malformed-payload paths.
+
+### A13 MVP — Warehouse restock threshold wired  ✅
+- `artifacts/backend/game_envs/supply_chain.py`:
+  - Default warehouse at (10, 10), capacity 60, **starts full** — so the restock rule is dormant by default. No GLS regression for existing demand-only sims.
+  - `apply_genome()` now stores `_warehouse_restock_threshold` (clamped to [0, 1]).
+  - `_assign_mission_target()` calls new `_pick_restock_warehouse(t)` — when a cargo-carrying truck would head to a demand zone, it first checks for any warehouse below threshold AND with available space. If found, diverts there. Threshold of 0.0 disables the divert.
+- Full scope (spec §4.1 Director infrastructure tools — `build_infrastructure`, `mutate_persona`, `spawn_fleet`, `adjust_incentives`) deferred — out of MVP scope.
+
+### A14 — Local fast-forward merge  ✅
+- `git checkout ui-upgrade-v2 && git merge --ff-only ea-engine-v1` succeeded cleanly. Both branches at the same SHA. **Not pushed to `origin`** — see "A14 push" above.
+- The earlier `git fetch --all` fatal was a stale `subrepl-o8bccxe1` SSH endpoint (the same one Phase 0.5 audit flagged). `origin` (GitHub) and `gitsafe-backup` both fetch cleanly.
+
+### Phase 6 — Pytest suite  ✅
+- `artifacts/backend/tests/` with `conftest.py`, `__init__.py`, and four test modules:
+  - `test_ea_integration.py` (13 tests) — encode/decode roundtrip, bounds preservation under random/mutate/crossover (parametrized over manufacturing + supply_chain), genome hash determinism, unknown-scenario error.
+  - `test_orchestrator_ea_dispatch.py` (3 tests) — `run_one_generation` returns expected keys, population stats are well-ordered, elitism guarantees best fitness non-decreasing across two generations with a deterministic evaluator (patched in place to avoid env spin-up).
+  - `test_persistence.py` (4 tests) — `save_ea_generation` ↔ `get_latest_ea_generation` roundtrip, latest=highest-gen_id, None for unknown run, `get_ea_generations` ascending order.
+  - `test_supply_chain_apply_genome.py` (11 tests post-A13) — fleet/supply_rate/transfer_amount propagation, partial genomes leave unset fields alone, threshold clamping, default warehouse spawn, restock divert routing, full-warehouse skip, threshold=0 disables divert.
+- **Coverage:** 82% on `agents/ea_integration.py` (uncovered lines are real evaluator bodies which tests intentionally mock, and the `__main__` smoke block).
+- Side change: `state/db.py` now reads `ARENA_DB_URL` env var (default unchanged) so test fixtures can isolate to a temp SQLite file. **Production behavior identical** when env var is unset.
+
+### Phase 7 — UI engine toggle  ✅
+- `artifacts/arena/src/pages/Arena.tsx`:
+  - `MUTATION_STRATEGIES` now includes DEAP. New `MutationStrategy` type covers MATH | DEAP | LLM.
+  - Start payload includes both `engine` (canonical) and `mutation_strategy` (legacy) fields.
+  - INTRA-mode auto-reset only kicks in when LLM is selected (DEAP works in both modes).
+  - Running-indicator badge gives DEAP a distinct green color (`#10b981`).
+- `artifacts/arena/src/components/EvoDashboard.tsx` — `MUTATION_COLORS` extended with MATH/DEAP/LLM (both cases) so the per-generation badge isn't always gray.
+- **Typecheck:** clean for the touched files. (One pre-existing TS7030 error in `GridCanvas.tsx` is unrelated.)
+
+### Phase 8 — User-facing docs  ✅
+- New `docs/EA_ENGINE.md` (~140 lines): what the EA is, how to enable each engine (UI / API / env), DEAP knob reference, LLM provider configuration, generation-log endpoint shape, resume protocol, cost expectations, troubleshooting, file index.
+- `replit.md` Mutation Strategies section updated: added DEAP, mentioned auto-detect for LLM, pointer to `docs/EA_ENGINE.md`.
+
+### Commits this phase
+| SHA (tentative) | Subject |
+|---|---|
+| `8c4a737` | EA engine: Anthropic backend for meta_optimizer + warm-start in simulation_loop (A11+A12) |
+| `063eda8` | EA engine Phase 6: pytest suite + test-isolatable DB URL |
+| _next_ | A13 MVP + Phase 7 UI toggle + Phase 8 docs + progress-doc update |
+
+### Action items raised this phase
+- **A14-push (DevOps / PM):** `ea-engine-v1` and `ui-upgrade-v2` are 8 commits ahead of `origin/main`. When merging is approved: `git push origin ui-upgrade-v2`, then merge → `main` per existing flow.
+- **A13 Full scope (Backend lead, future):** Director infrastructure-building tools per spec §4.1 — out of MVP scope; the MVP only handles routing.
+
+### Test summary
+```
+artifacts/backend/tests/        31 passed in 1.04s
+```
+
+### Verified end-to-end
+- Live Anthropic call returns a parseable manufacturing genome delta.
+- Warm-start helper passes cold, warm, and malformed-payload paths.
+- Default warehouse starts full → existing sims unchanged.
+- Restock divert kicks in when warehouse drained below threshold.
+- UI engine selector compiles cleanly (Arena.tsx + EvoDashboard.tsx).
 
 ---
 
 ## Next-session pickup — concrete handoff
+
+> **NOTE — 2026-05-26:** All items previously listed in this section
+> (A11, A12, A13, A14, Phase 6, Phase 7, Phase 8) were completed in Phase 4
+> above. The detailed entries below are kept for archival reference and
+> for the acceptance criteria language — useful if a future session wants
+> to re-validate one of them. The only truly-open item is `A14 push`
+> (see Phase 3.5 "What's still open").
 
 Each open item below is self-contained and can be done in any order. File paths and acceptance criteria are explicit so the next session can start without re-reading 8000 lines of code.
 

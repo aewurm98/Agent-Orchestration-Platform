@@ -84,6 +84,14 @@ const MUTATION_COLORS: Record<string, string> = {
   remove_agent: "#F43F5E",
   swap_speed:   "#8B5CF6",
   change_rate:  "#F59E0B",
+  // Engine identifiers — appear when the backend stamps the row with the
+  // active mutation strategy rather than a per-generation mutation label.
+  MATH:         "#6b6359",
+  math:         "#6b6359",
+  DEAP:         "#10b981",
+  deap:         "#10b981",
+  LLM:          "#8B5CF6",
+  llm:          "#8B5CF6",
   default:      "#6b6359",
 };
 

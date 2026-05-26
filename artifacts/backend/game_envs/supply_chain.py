@@ -199,14 +199,24 @@ class EdgeException(Exception):
 class SupplyChainEnv:
     # Genome defaults — fields the EA may evolve. Phase-3 expansion makes
     # supply_rate / transfer_amount actually wire through to env behavior (see
-    # apply_genome + tick_logic). warehouse_restock_threshold is reserved for a
-    # future warehouse-buying behavior; currently a vestigial knob.
+    # apply_genome + tick_logic). warehouse_restock_threshold (A13 MVP) controls
+    # when a cargo-carrying truck diverts to top up a warehouse instead of
+    # serving a demand zone.
     GENOME_DEFAULTS: dict = {
         "fleet_size": 3,
         "supply_rate": SUPPLIER_GEN_UNITS,
         "transfer_amount": TRUCK_CAPACITY,
         "warehouse_restock_threshold": 0.5,
     }
+
+    # Default warehouse spawned in _build_initial_network. Starts full so the
+    # threshold rule is dormant by default — existing demand-only sims see no
+    # behavioural change. Routing only diverts after inventory drains below
+    # threshold (which today only happens if a future consumer is wired in,
+    # e.g. spec §4.1 Director tools).
+    _DEFAULT_WAREHOUSE_X = 10
+    _DEFAULT_WAREHOUSE_Y = 10
+    _DEFAULT_WAREHOUSE_CAPACITY = 60
 
     def __init__(self) -> None:
         self._rng = random.Random(42)
@@ -217,6 +227,9 @@ class SupplyChainEnv:
         self._supply_gen_units: int = SUPPLIER_GEN_UNITS
         self._supply_gen_period: int = SUPPLIER_GEN_PERIOD
         self._truck_capacity: int = TRUCK_CAPACITY
+        self._warehouse_restock_threshold: float = float(
+            self.GENOME_DEFAULTS["warehouse_restock_threshold"]
+        )
 
         # Ledger components (GLS = revenue - (capex + opex + penalties))
         self.revenue = 0.0
@@ -257,12 +270,20 @@ class SupplyChainEnv:
         return g
 
     def _build_initial_network(self) -> None:
-        # Suppliers on the left, demand zones on the right.
+        # Suppliers on the left, demand zones on the right, warehouse in the middle.
         self.nodes["supplier_0"] = Node("supplier_0", "supplier", x=2, y=5, stock=30)
         self.nodes["supplier_1"] = Node("supplier_1", "supplier", x=2, y=14, stock=30)
         self.nodes["demand_0"] = Node("demand_0", "demand", x=17, y=3)
         self.nodes["demand_1"] = Node("demand_1", "demand", x=17, y=10)
         self.nodes["demand_2"] = Node("demand_2", "demand", x=17, y=16)
+        # A13 MVP: default warehouse at the midpoint. Starts full so the
+        # restock-threshold rule is dormant unless something later depletes it.
+        self.nodes["warehouse_0"] = Node(
+            "warehouse_0", "warehouse",
+            x=self._DEFAULT_WAREHOUSE_X, y=self._DEFAULT_WAREHOUSE_Y,
+            capacity=self._DEFAULT_WAREHOUSE_CAPACITY,
+            inventory=self._DEFAULT_WAREHOUSE_CAPACITY,
+        )
         # Ensure node cells are passable.
         for n in self.nodes.values():
             self.grid[n.y][n.x] = "highway" if self.grid[n.y][n.x] == "obstacle" else self.grid[n.y][n.x]
@@ -292,7 +313,9 @@ class SupplyChainEnv:
           fleet_size:   target number of trucks (1-10 typical)
           supply_rate:  cargo units generated per supplier per generation event
           transfer_amount: max units a truck may load per pickup
-          warehouse_restock_threshold: reserved for future warehouse logic; ignored today
+          warehouse_restock_threshold: 0.0–1.0; cargo-carrying trucks divert to
+            top up a warehouse when warehouse.inventory / warehouse.capacity is
+            below this value. 0.0 disables the divert; 1.0 always diverts.
         """
         if "fleet_size" in genome_config:
             target = int(genome_config["fleet_size"])
@@ -304,6 +327,10 @@ class SupplyChainEnv:
             self._supply_gen_units = max(1, int(genome_config["supply_rate"]))
         if "transfer_amount" in genome_config:
             self._truck_capacity = max(1, int(genome_config["transfer_amount"]))
+        if "warehouse_restock_threshold" in genome_config:
+            self._warehouse_restock_threshold = max(
+                0.0, min(1.0, float(genome_config["warehouse_restock_threshold"]))
+            )
 
     def set_user_knobs(self, knobs: dict) -> None:
         # Live UI override: global demand pressure (scales each zone's accrual).
@@ -331,12 +358,22 @@ class SupplyChainEnv:
         return min(cands, key=lambda n: abs(n.x - t.x) + abs(n.y - t.y))
 
     def _assign_mission_target(self, t: Truck) -> None:
-        """Pick a target node for the truck's current mission and plan an A* path."""
+        """Pick a target node for the truck's current mission and plan an A* path.
+
+        A13 MVP: when a cargo-carrying truck would normally head to a demand zone,
+        first check whether any warehouse is below `warehouse_restock_threshold`.
+        If so, divert there to top it up — but only if the warehouse still has
+        space to accept the load (otherwise the divert would always fail and the
+        truck would oscillate).
+        """
         if t.cargo > 0:
-            t.mission = "to_demand"
-            # Prefer the neediest reachable demand zone.
-            demands = self._nodes_by_kind("demand")
-            target = max(demands, key=lambda n: n.accumulated_demand) if demands else None
+            target = self._pick_restock_warehouse(t)
+            if target is not None:
+                t.mission = "to_warehouse"
+            else:
+                t.mission = "to_demand"
+                demands = self._nodes_by_kind("demand")
+                target = max(demands, key=lambda n: n.accumulated_demand) if demands else None
         else:
             t.mission = "to_supplier"
             target = self._nearest_node(t, "supplier", predicate=lambda n: n.stock > 0) \
@@ -347,6 +384,22 @@ class SupplyChainEnv:
             return
         t.target_id = target.id
         t.path = astar(self.grid, (t.x, t.y), (target.x, target.y)) or []
+
+    def _pick_restock_warehouse(self, t: Truck) -> Optional[Node]:
+        """Nearest warehouse that is below the restock threshold AND has space
+        to accept this truck's cargo. None when no warehouse qualifies."""
+        threshold = self._warehouse_restock_threshold
+        if threshold <= 0.0:
+            return None
+        candidates = [
+            w for w in self._nodes_by_kind("warehouse")
+            if w.capacity > 0
+            and (w.inventory / w.capacity) < threshold
+            and w.inventory < w.capacity
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda n: abs(n.x - t.x) + abs(n.y - t.y))
 
     # ── core tick (programmatic phases A/B/D; exceptions returned for LLM) ─────
 

@@ -53,11 +53,18 @@ const MUTATION_STRATEGIES = [
     desc: "Deterministic genome mutation via formulas. Fast, cheap, reproducible. Default.",
   },
   {
+    value: "DEAP" as const,
+    label: "DEAP",
+    desc: "Population-based evolutionary algorithm (selection + crossover + mutation). Works in both INTRA and INTER, costs ~6× more CPU than MATH, no API key required.",
+  },
+  {
     value: "LLM" as const,
     label: "LLM",
-    desc: "An LLM proposes mutations using reasoning. Requires ANTHROPIC_API_KEY and INTER mode.",
+    desc: "An LLM proposes mutations using reasoning. Requires OPENAI_API_KEY or ANTHROPIC_API_KEY (auto-detected). INTER mode recommended.",
   },
 ];
+
+type MutationStrategy = (typeof MUTATION_STRATEGIES)[number]["value"];
 
 const TAB_INFO: Record<string, string> = {
   DAG: "Topology of agent ↔ tool connections. Click a node to inspect its tools, recent actions, and system prompt.",
@@ -93,7 +100,7 @@ export default function Arena() {
   const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, clearSessionState, mfgState } = useSocket();
   const [scenario, setScenario] = useState("Supply Chain");
   const [boundaryMode, setBoundaryMode] = useState<"INTRA" | "INTER">("INTRA");
-  const [mutationStrategy, setMutationStrategy] = useState<"MATH" | "LLM">("MATH");
+  const [mutationStrategy, setMutationStrategy] = useState<MutationStrategy>("MATH");
   const [interTicks, setInterTicks] = useState(100);
   const [isHitl, setIsHitl] = useState(false);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
@@ -108,6 +115,9 @@ export default function Arena() {
           scenario,
           mode: isHitl ? "hitl" : "autonomous",
           boundary_mode: boundaryMode,
+          // `engine` is the canonical field name on the backend; `mutation_strategy`
+          // is the legacy name and is still accepted as a fallback.
+          engine: mutationStrategy,
           mutation_strategy: mutationStrategy,
           inter_ticks: interTicks,
         }),
@@ -175,7 +185,10 @@ export default function Arena() {
             onValueChange={(v) => {
               const bm = v as "INTRA" | "INTER";
               setBoundaryMode(bm);
-              if (bm === "INTRA") setMutationStrategy("MATH");
+              // LLM is INTRA-disabled (needs episodic eval); fall back to MATH
+              // when the user switches to INTRA while LLM was selected. DEAP
+              // works in both modes so it should be left alone.
+              if (bm === "INTRA" && mutationStrategy === "LLM") setMutationStrategy("MATH");
             }}
             disabled={isRunning}
           >
@@ -199,14 +212,14 @@ export default function Arena() {
           {/* Mutation strategy selector */}
           <Select
             value={mutationStrategy}
-            onValueChange={(v) => setMutationStrategy(v as "MATH" | "LLM")}
+            onValueChange={(v) => setMutationStrategy(v as MutationStrategy)}
             disabled={isRunning}
           >
             <SelectTrigger
-              className={`w-[100px] ${selectTriggerClass}`}
+              className={`w-[110px] ${selectTriggerClass}`}
               data-testid="select-mutation-strategy"
             >
-              <SelectValue placeholder="Mutate">
+              <SelectValue placeholder="Engine">
                 <span className="font-mono">{mutationStrategy}</span>
               </SelectValue>
             </SelectTrigger>
@@ -294,6 +307,8 @@ export default function Arena() {
                 <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold border ${
                   mutationStrategy === "LLM"
                     ? "border-[#8B5CF6]/30 text-[#8B5CF6] bg-[#F5F3FF]"
+                    : mutationStrategy === "DEAP"
+                    ? "border-[#10b981]/30 text-[#10b981] bg-[#ecfdf5]"
                     : "border-[#ebe5d6] text-[#6b6359] bg-[#efe9d9]"
                 }`}>
                   {mutationStrategy}
