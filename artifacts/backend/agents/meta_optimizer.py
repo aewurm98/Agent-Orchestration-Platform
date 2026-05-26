@@ -14,27 +14,84 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+try:
+    from anthropic import AsyncAnthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    AsyncAnthropic = None  # type: ignore[assignment]
+    _ANTHROPIC_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 
-_client: AsyncOpenAI | None = None
+_openai_client: AsyncOpenAI | None = None
+_anthropic_client: "AsyncAnthropic | None" = None
+
+# Default Anthropic model — cheap and fast.
+_DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
+_DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 
-def _get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
+def _resolve_provider() -> str:
+    """
+    Pick LLM provider for the meta-optimizer.
+
+    Precedence:
+      1. META_OPTIMIZER_PROVIDER env var ("openai" | "anthropic")
+      2. OPENAI_API_KEY present -> openai
+      3. ANTHROPIC_API_KEY present + anthropic SDK importable -> anthropic
+      4. raise RuntimeError (caller catches; loop falls back to MATH)
+    """
+    explicit = (os.environ.get("META_OPTIMIZER_PROVIDER") or "").strip().lower()
+    if explicit in {"openai", "anthropic"}:
+        return explicit
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("ANTHROPIC_API_KEY") and _ANTHROPIC_AVAILABLE:
+        return "anthropic"
+    # Last resort: Replit OpenAI integration creds, if present
+    if os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL") and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"):
+        return "openai"
+    raise RuntimeError(
+        "No LLM credentials found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, "
+        "or configure the Replit OpenAI AI Integration."
+    )
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
         openai_key = os.environ.get("OPENAI_API_KEY")
         integration_base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
         integration_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
         if openai_key:
-            _client = AsyncOpenAI(api_key=openai_key)
+            _openai_client = AsyncOpenAI(api_key=openai_key)
         elif integration_base and integration_key:
-            _client = AsyncOpenAI(base_url=integration_base, api_key=integration_key)
+            _openai_client = AsyncOpenAI(base_url=integration_base, api_key=integration_key)
         else:
             raise RuntimeError(
                 "No OpenAI credentials found. "
                 "Set OPENAI_API_KEY or configure the Replit OpenAI AI Integration."
             )
-    return _client
+    return _openai_client
+
+
+def _get_anthropic_client() -> "AsyncAnthropic":
+    global _anthropic_client
+    if not _ANTHROPIC_AVAILABLE or AsyncAnthropic is None:
+        raise RuntimeError(
+            "anthropic SDK not installed. Run scripts/install_python_deps.sh."
+        )
+    if _anthropic_client is None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set in environment.")
+        _anthropic_client = AsyncAnthropic(api_key=api_key)
+    return _anthropic_client
+
+
+# Back-compat shim — some external callers may still import _get_client.
+def _get_client() -> AsyncOpenAI:
+    return _get_openai_client()
 
 
 # ---------------------------------------------------------------------------
@@ -275,28 +332,60 @@ def _build_user_prompt(state: dict, env: Any, digest: dict) -> str:
 # LLM query
 # ---------------------------------------------------------------------------
 
+async def _chat_openai(system_prompt: str, user_prompt: str, model: str) -> str:
+    client = _get_openai_client()
+    response = await client.chat.completions.create(
+        model=model,
+        max_completion_tokens=512,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+async def _chat_anthropic(system_prompt: str, user_prompt: str, model: str) -> str:
+    client = _get_anthropic_client()
+    response = await client.messages.create(
+        model=model,
+        max_tokens=512,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    # Concatenate all text blocks in the response (typically just one).
+    parts = []
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
+
+
 async def query_meta_optimizer(state: dict, env: Any) -> dict:
     """
     Query the LLM meta-optimizer and return a parsed genome delta dict.
     Falls back to an empty dict (no-op) on any error so the loop never crashes.
+
+    Provider is chosen by `META_OPTIMIZER_PROVIDER` or auto-detected from the
+    available API key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
     """
     scenario = state.get("scenario", "manufacturing")
     try:
-        client = _get_client()
+        provider = _resolve_provider()
         digest = build_episode_digest(state, env)
         system_prompt = _build_system_prompt(scenario)
         user_prompt = _build_user_prompt(state, env, digest)
 
-        print(f"[LLM meta_optimizer] querying model for scenario={scenario}")
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_completion_tokens=512,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        raw = (response.choices[0].message.content or "").strip()
+        if provider == "anthropic":
+            model = os.environ.get("META_OPTIMIZER_MODEL", _DEFAULT_ANTHROPIC_MODEL)
+            print(f"[LLM meta_optimizer] provider=anthropic model={model} scenario={scenario}")
+            raw = await _chat_anthropic(system_prompt, user_prompt, model)
+        else:
+            model = os.environ.get("META_OPTIMIZER_MODEL", _DEFAULT_OPENAI_MODEL)
+            print(f"[LLM meta_optimizer] provider=openai model={model} scenario={scenario}")
+            raw = await _chat_openai(system_prompt, user_prompt, model)
+
         print(f"[LLM meta_optimizer] raw response length={len(raw)}")
 
         # Strip markdown fences if model added them anyway
@@ -305,7 +394,7 @@ async def query_meta_optimizer(state: dict, env: Any) -> dict:
             raw = "\n".join(lines[1:]).rstrip("`").strip()
 
         delta = json.loads(raw)
-        log.info("Meta-optimizer [%s] proposed: %s", scenario, delta)
+        log.info("Meta-optimizer [%s/%s] proposed: %s", scenario, provider, delta)
         return delta
 
     except Exception as exc:

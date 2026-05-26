@@ -175,6 +175,56 @@ def _build_dag_update(orch_state: dict, scenario: str) -> dict:
     return {"nodes": dag_nodes, "edges": dag_edges}
 
 
+def _apply_resume_payload(orch_state: dict, run_id: str) -> dict:
+    """
+    If `active_run["resume_payload"]` is set (populated by /api/scenario/start when
+    `resume_payload` is in the POST body), copy the saved generation state into
+    `orch_state` so the simulation picks up where it left off.
+
+    Returns the same dict (mutated in place) for chaining. No-op if no payload.
+    Wrapped in try/except so a malformed payload never crashes the loop.
+    """
+    rp = active_run.get("resume_payload")
+    if not rp:
+        return orch_state
+    try:
+        gen_id = int(rp.get("gen_id", 0) or 0)
+        accepted = float(rp.get("accepted_fitness") or 0.0)
+        child = float(rp.get("child_fitness") or 0.0)
+        stagnation = int(rp.get("stagnation") or 0)
+        mut_strat = str(rp.get("mutation_strategy") or orch_state.get("mutation_strategy") or "MATH")
+        genome_json = rp.get("genome_json") or {}
+
+        if isinstance(genome_json, dict) and genome_json:
+            orch_state["genome_config"] = genome_json
+        orch_state["generation"] = gen_id
+        orch_state["accepted_fitness"] = accepted
+        orch_state["parent_fitness"] = child  # last child becomes next parent
+        orch_state["current_fitness"] = child
+        orch_state["stagnation_counter"] = stagnation
+        orch_state["mutation_strategy"] = mut_strat
+
+        # System trace so the UI can show a "resumed" banner.
+        traces = orch_state.setdefault("traces", [])
+        traces.append({
+            "role": "system",
+            "content": (
+                f"Resumed run {run_id} from generation {gen_id} "
+                f"(accepted_fitness={accepted:.4f}, strategy={mut_strat})"
+            ),
+            "timestamp": time.time(),
+        })
+        print(
+            f"[resume] run_id={run_id} gen={gen_id} accepted={accepted:.4f} "
+            f"child={child:.4f} strategy={mut_strat} "
+            f"genome_keys={list(genome_json.keys()) if isinstance(genome_json, dict) else 'n/a'}"
+        )
+    except Exception as exc:
+        # Never let a malformed payload crash the sim — log and continue cold.
+        print(f"[resume] WARNING: failed to apply resume_payload: {exc}")
+    return orch_state
+
+
 async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     """
     Main simulation loop.
@@ -296,6 +346,10 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             "inter_ticks": active_run.get("inter_ticks", 100),
             "inter_episode_done": False,
         }
+
+        # Warm-start: if /api/scenario/start was called with a resume_payload,
+        # overlay the saved generation state on top of the cold-start orch_state.
+        orch_state = _apply_resume_payload(orch_state, run_id)
 
         boundary_mode_mfg = active_run.get("boundary_mode", "INTRA")
 
@@ -648,6 +702,21 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
     # Initialise supply chain genome so the first mutation has a baseline to perturb
     if scenario == "supply_chain" and not orch_state.get("genome_config"):
         orch_state["genome_config"] = dict(SupplyChainEnv.GENOME_DEFAULTS)
+
+    # Warm-start for non-manufacturing scenarios: overlay saved generation state
+    # if /api/scenario/start was called with a resume_payload. Also re-apply the
+    # saved genome to the env, since the env was just freshly constructed.
+    orch_state = _apply_resume_payload(orch_state, run_id)
+    if (
+        active_run.get("resume_payload")
+        and hasattr(env, "apply_genome")
+        and isinstance(orch_state.get("genome_config"), dict)
+        and orch_state["genome_config"]
+    ):
+        try:
+            env.apply_genome(orch_state["genome_config"])
+        except Exception as exc:
+            print(f"[resume] WARNING: env.apply_genome failed: {exc}")
 
     game_tick_counter = 0
     trace_cursor = 0
