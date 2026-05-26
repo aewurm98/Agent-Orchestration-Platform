@@ -193,6 +193,152 @@ Branch is now ahead of `ui-upgrade-v2` by 3 commits. Working tree clean.
 - **A12 (warm-start wiring):** `/api/scenario/resume/{run_id}` returns a payload and `/api/scenario/start` accepts it, but `simulation_loop` doesn't yet read `active_run["resume_payload"]` and seed orch_state from it. ~20 lines to wire.
 - **A13 (warehouse logic):** `warehouse_restock_threshold` genome field exists but env has no consumer for it yet.
 
+---
+
+## Next-session pickup — concrete handoff
+
+Each open item below is self-contained and can be done in any order. File paths and acceptance criteria are explicit so the next session can start without re-reading 8000 lines of code.
+
+### A11 — Add Anthropic backend to meta_optimizer  (~30 LoC, ~30 min)
+**Why:** LLM mutation strategy silently falls back to MATH today because the project has only `ANTHROPIC_API_KEY` in Secrets, but `meta_optimizer.py` is OpenAI-only.
+
+**Where:** `artifacts/backend/agents/meta_optimizer.py`
+- Lines 15–35: `_get_client()` constructs an `AsyncOpenAI` — needs a fallback path.
+- Lines 278–313: `query_meta_optimizer()` calls `client.chat.completions.create(...)` — needs a parallel path for Anthropic.
+
+**Approach:**
+1. Add a second factory `_get_anthropic_client()` using `anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])` (the `anthropic` package is already in requirements.txt).
+2. Pick provider in `query_meta_optimizer` by env var `META_OPTIMIZER_PROVIDER` (default `"openai"`, fallback `"anthropic"` if OpenAI key missing).
+3. Adapter function `_chat(messages, schema)` that returns the same shape regardless of provider — Anthropic side uses `tools=[{"input_schema": …}]` and parses `response.content[0].input`.
+4. Recommend `claude-haiku-4-5` (cheap, fast) as the Anthropic default.
+
+**Acceptance:** Setting `engine=LLM` on `/api/scenario/start` produces a valid genome delta (visible in `traces`) even when `OPENAI_API_KEY` is unset.
+
+**Risk:** Low — falls back to MATH on any LLM error, existing behavior.
+
+---
+
+### A12 — True warm-start wiring  (~20 LoC, ~30 min)
+**Why:** `GET /api/scenario/resume/{run_id}` returns a checkpoint and `POST /api/scenario/start` accepts `resume_payload` in the body — but `simulation_loop` never reads it.
+
+**Where:** `artifacts/backend/main.py`
+- Find the function `simulation_loop(scenario, mode, run_id)` (probably ~lines 600–800; grep for `async def simulation_loop`).
+- Find where `orch_state` is first initialized inside that function (likely a dict literal or call to a helper).
+
+**Approach:**
+1. After `orch_state` is built, check `active_run.get("resume_payload")`:
+   ```python
+   rp = active_run.get("resume_payload")
+   if rp:
+       orch_state["genome_config"] = rp.get("genome_json") or orch_state["genome_config"]
+       orch_state["generation"] = int(rp.get("gen_id", 0))
+       orch_state["accepted_fitness"] = float(rp.get("accepted_fitness", 0.0))
+       orch_state["parent_fitness"] = float(rp.get("child_fitness", 0.0))
+       orch_state["mutation_strategy"] = rp.get("mutation_strategy", orch_state.get("mutation_strategy", "MATH"))
+   ```
+2. Emit a `system` trace event so the UI shows "resumed from generation N".
+
+**Acceptance:** `/api/scenario/start` with `resume_payload` and `resume_run_id` set in the body produces a sim where `generation` starts at the saved gen_id (not 0), and the first `dag_update` socket event reflects the saved genome.
+
+**Risk:** Low — wrap reading in a try/except so a malformed payload doesn't crash the loop.
+
+---
+
+### A13 — Wire `warehouse_restock_threshold`  (variable, design-dependent)
+**Why:** The genome field is in `GENOME_DEFAULTS` and `apply_genome()` but the env has no consumer.
+
+**Where:** `artifacts/backend/game_envs/supply_chain.py`
+- `_build_initial_network()` (line 246) creates only suppliers + demand zones. No warehouses.
+- The Supply Chain v2 Spec §4.1 has a `build_infrastructure` Director tool that builds warehouses dynamically.
+
+**Two scopes to choose between:**
+- **MVP (small):** Spawn a default warehouse in `_build_initial_network()` at a midpoint position. In `tick_logic`, when `warehouse.inventory / warehouse.capacity < self._warehouse_restock_threshold`, mark it as "needs restock" and prioritize truck routing to it.
+- **Full (large):** Implement the full Director infrastructure-building action space from spec §4.1 (`build_infrastructure`, `mutate_persona`, `spawn_fleet`, `adjust_incentives`). This is a major env extension and probably its own milestone.
+
+**Acceptance (MVP):** With `warehouse_restock_threshold=0.3`, trucks route to the warehouse only when its inventory drops below 30% capacity.
+
+**Risk:** Medium — changes truck routing logic, could regress GLS scores on existing runs.
+
+---
+
+### A14 — Merge plan  (5 min)
+**Why:** `ea-engine-v1` is 4 commits ahead of `ui-upgrade-v2`. Branch should be merged when ready.
+
+**Approach:**
+1. From `ui-upgrade-v2`: `git merge ea-engine-v1` (fast-forward — no conflicts expected because the pre-EA WIP commit captured the working tree fully).
+2. Or open a PR for review: `gh pr create --base ui-upgrade-v2 --head ea-engine-v1`.
+3. Eventually merge `ui-upgrade-v2` → `main` per existing flow.
+
+**Pre-merge checklist:**
+- [ ] Run `scripts/install_python_deps.sh` on the target environment.
+- [ ] Sanity check: `python3 -c "from agents.ea_integration import available; print(available())"` returns `True`.
+- [ ] Optional: run Phase 6 tests before merging (if delivered).
+
+---
+
+### Phase 6 — Tests  (~1 hr)
+**Why:** No automated coverage for the EA path. Smoke tests verified the happy paths but no regression guard.
+
+**Where to start:** Create `artifacts/backend/tests/` directory.
+
+**Suggested files:**
+1. **`test_ea_integration.py`** — pure-Python unit tests, no env spin-up:
+   - `test_encode_decode_roundtrip(scenario)` — parametrized over `["manufacturing", "supply_chain"]`.
+   - `test_random_individual_in_bounds(scenario)` — assert each field within bounds.
+   - `test_mutate_in_bounds(scenario)` — 100 random mutations, all in bounds.
+   - `test_crossover_preserves_bounds(scenario)`.
+   - `test_genome_hash_stable()` — same dict → same hash.
+   - `test_strategy_registry_unknown_scenario_raises()`.
+2. **`test_orchestrator_ea_dispatch.py`** — integration with mocked env:
+   - Mock `_mfg_evaluate` to return `(0.5, [1,2,3])` instantly.
+   - Call `orchestrator.mutate(state)` with `state["mutation_strategy"]="DEAP"` — assert `state["genome_config"]` mutates, `state["population_stats"]` populated.
+   - Repeat with `"MATH"` — assert no DEAP keys present.
+3. **`test_persistence.py`** — DB roundtrip:
+   - `init_db()` + `save_ea_generation()` + `get_latest_ea_generation()`.
+4. **`test_supply_chain_apply_genome.py`** — env-level:
+   - Construct env, apply genome `{fleet_size: 5, supply_rate: 25}`, assert `len(env.trucks)==5`, `env._supply_gen_units==25`.
+   - Run 50 ticks, assert no exceptions.
+
+**Acceptance:** `pytest artifacts/backend/tests/` exits 0, ≥ 80% coverage on `ea_integration.py`.
+
+**Risk:** Low — pure additive.
+
+---
+
+### Phase 7 — Frontend UI toggle  (~30 min)
+**Why:** Today engine choice is API-param only; users must POST to start manually.
+
+**Where:** `artifacts/arena/src/components/EvoDashboard.tsx` (probably; grep for `mutation_strategy` to confirm).
+
+**Approach:**
+1. Add a `<select>` for engine: `MATH | DEAP | LLM`, default from current `active_run.mutation_strategy` (fetch via existing API).
+2. Include the chosen value in the start payload (`{ engine: value }`).
+3. Display the active engine in the dashboard header so users know which one is running.
+
+**Acceptance:** Selecting `DEAP` then clicking Start produces a run that uses DEAP. Visible in `/api/healthz` or new `/api/scenario/status` endpoint.
+
+**Risk:** Low — pure additive frontend.
+
+---
+
+### Phase 8 — User-facing docs  (~30 min)
+**Why:** `plans/EA_Engine_*.md` are dev-internal. End users need a short "how to use the EA" doc.
+
+**Where:** Either new file `docs/EA_ENGINE.md` or expand `replit.md`.
+
+**Content outline:**
+1. What is the EA — one paragraph.
+2. How to enable DEAP: API param, env var, eventually UI toggle.
+3. How to read `/api/ea/generations/{run_id}` for analytics.
+4. Knob reference table (population size, crossover rate, etc.).
+5. How to resume: GET `/api/scenario/resume/{run_id}` → POST `/api/scenario/start` with the payload.
+6. Cost expectations: ~$0.04 LLM tokens per 20-gen run, ~2 min CPU.
+7. Troubleshooting: deap not installed → run `scripts/install_python_deps.sh`. LLM strategy silently MATH → see A11.
+
+**Acceptance:** A new team member can enable DEAP and read its output without reading any of the source files.
+
+**Risk:** Zero.
+
 
 ---
 
