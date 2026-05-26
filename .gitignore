@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Claude Code session artifacts (not source-controlled)
+.claude/
+.claude_aliases
