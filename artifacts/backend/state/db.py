@@ -52,6 +52,30 @@ class TraceModel(Base):
     timestamp = Column(Float, default=time.time)
 
 
+class EAGenerationModel(Base):
+    """Per-generation EA checkpoint for resume + analytics.
+
+    Separate from GenerationModel (legacy, kept for backwards compatibility) so
+    existing arena.db files do not need a schema migration to pick this up.
+    """
+    __tablename__ = "ea_generations"
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(100), nullable=False, index=True)
+    scenario = Column(String(64), nullable=False, index=True)
+    gen_id = Column(Integer, nullable=False)
+    boundary_mode = Column(String(16), default="INTRA")
+    mutation_strategy = Column(String(16), default="MATH")
+    parent_fitness = Column(Float)
+    child_fitness = Column(Float)
+    accepted_fitness = Column(Float)
+    stagnation = Column(Integer, default=0)
+    genome_json = Column(JSON, default={})
+    fitness_vector_json = Column(JSON, default=[])
+    population_stats_json = Column(JSON, default={})
+    topology_diff = Column(String(255))
+    timestamp = Column(Float, default=time.time)
+
+
 @dataclass
 class WorkflowIn:
     name: str
@@ -70,6 +94,31 @@ class TraceIn:
     generation: int
     agent_role: str
     content: str
+
+
+@dataclass
+class EAGenerationIn:
+    run_id: str
+    scenario: str
+    gen_id: int
+    parent_fitness: float = 0.0
+    child_fitness: float = 0.0
+    accepted_fitness: float = 0.0
+    stagnation: int = 0
+    boundary_mode: str = "INTRA"
+    mutation_strategy: str = "MATH"
+    genome_json: Any = None
+    fitness_vector_json: Any = None
+    population_stats_json: Any = None
+    topology_diff: str = ""
+
+    def __post_init__(self):
+        if self.genome_json is None:
+            self.genome_json = {}
+        if self.fitness_vector_json is None:
+            self.fitness_vector_json = []
+        if self.population_stats_json is None:
+            self.population_stats_json = {}
 
 
 async def init_db():
@@ -156,6 +205,73 @@ async def get_workflow_by_id(workflow_id: str) -> Optional[dict]:
             "topology": row.topology,
             "created_at": row.created_at,
         }
+
+
+async def save_ea_generation(row_in: EAGenerationIn) -> dict:
+    async with AsyncSessionLocal() as session:
+        row = EAGenerationModel(
+            run_id=row_in.run_id,
+            scenario=row_in.scenario,
+            gen_id=row_in.gen_id,
+            boundary_mode=row_in.boundary_mode,
+            mutation_strategy=row_in.mutation_strategy,
+            parent_fitness=row_in.parent_fitness,
+            child_fitness=row_in.child_fitness,
+            accepted_fitness=row_in.accepted_fitness,
+            stagnation=row_in.stagnation,
+            genome_json=row_in.genome_json,
+            fitness_vector_json=row_in.fitness_vector_json,
+            population_stats_json=row_in.population_stats_json,
+            topology_diff=row_in.topology_diff,
+            timestamp=time.time(),
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return _ea_generation_to_dict(row)
+
+
+async def get_latest_ea_generation(run_id: str) -> Optional[dict]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(EAGenerationModel)
+            .where(EAGenerationModel.run_id == run_id)
+            .order_by(EAGenerationModel.gen_id.desc())
+            .limit(1)
+        )
+        row = result.scalars().first()
+        return _ea_generation_to_dict(row) if row else None
+
+
+async def get_ea_generations(run_id: str, limit: int = 500) -> list[dict]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(EAGenerationModel)
+            .where(EAGenerationModel.run_id == run_id)
+            .order_by(EAGenerationModel.gen_id.asc())
+            .limit(limit)
+        )
+        return [_ea_generation_to_dict(r) for r in result.scalars().all()]
+
+
+def _ea_generation_to_dict(row: EAGenerationModel) -> dict:
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "scenario": row.scenario,
+        "gen_id": row.gen_id,
+        "boundary_mode": row.boundary_mode,
+        "mutation_strategy": row.mutation_strategy,
+        "parent_fitness": row.parent_fitness,
+        "child_fitness": row.child_fitness,
+        "accepted_fitness": row.accepted_fitness,
+        "stagnation": row.stagnation,
+        "genome_json": row.genome_json,
+        "fitness_vector_json": row.fitness_vector_json,
+        "population_stats_json": row.population_stats_json,
+        "topology_diff": row.topology_diff,
+        "timestamp": row.timestamp,
+    }
 
 
 async def get_traces(run_id: str) -> list[dict]:

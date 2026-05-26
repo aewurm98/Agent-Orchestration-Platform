@@ -347,6 +347,22 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 if not active_run.get("running"):
                     break
 
+                # 2b. Mini-batch evaluation (spec §3.1): run the candidate genome
+                #     across fixed stochastic seeds and average the fitness vectors
+                #     so the EA / meta-optimizer never over-fits a single lucky run.
+                #     Runs off the event loop to avoid blocking per-tick emissions.
+                from evolution.minibatch import evaluate_genome_minibatch
+                _mb = await asyncio.to_thread(
+                    evaluate_genome_minibatch, orch_state.get("genome_config", {}), T_max
+                )
+                orch_state["minibatch_fitness"] = _mb["fitness"]
+                orch_state["minibatch_vector"] = _mb["fitness_vector"]
+                orch_state["minibatch_metrics"] = _mb["metrics"]
+                print(
+                    f"[INTER minibatch] seeds={_mb['metrics'].get('seeds')} "
+                    f"mean_fitness={_mb['fitness']} per_seed={_mb['per_seed']}"
+                )
+
                 # 3. Run evolutionary step: evaluate → hitl_gate → mutate ─────
                 orch_state["inter_episode_done"] = True
                 orch_state = await run_one_generation(orch_state)
@@ -515,6 +531,97 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             tick_sleep = max(0.05, 0.5 / max(speed_mult, 0.1))
             await asyncio.sleep(tick_sleep)
 
+        return
+
+    # ── Supply Chain v2 loop (real-time truck edge-agents + director) ─────────
+    if scenario == "supply_chain":
+        from game_envs.supply_chain import SupplyChainEnv as _SCEnv2
+        from agents import supply_chain_llm as _sc_llm
+
+        env = _SCEnv2()
+        _sc_module._active_env = env
+        # LLM brains active only in "LLM" mutation mode; otherwise deterministic
+        # fallbacks run the whole show (no API calls / cost).
+        use_llm = active_run.get("mutation_strategy", "MATH") == "LLM"
+        print(f"[supply_chain v2] loop start — use_llm={use_llm}")
+
+        while active_run.get("running"):
+            if active_run.get("paused"):
+                await asyncio.sleep(0.1)
+                continue
+            speed_mult = float(active_run.get("speed_multiplier", 1.0))
+
+            # ── A/B/D: programmatic tick (returns pending edge exceptions) ────
+            env.step()
+
+            # ── C: local exception resolution (concurrent LLM batching) ───────
+            exceptions = getattr(env, "pending_exceptions", [])
+            if exceptions:
+                if use_llm:
+                    ctxs = [env.build_exception_context(t, e) for t, e in exceptions]
+                    results = await asyncio.gather(
+                        *[_sc_llm.resolve_edge_exception(c) for c in ctxs]
+                    )
+                else:
+                    results = [None] * len(exceptions)
+                for (t, e), res in zip(exceptions, results):
+                    decision = res or env.fallback_edge_decision(t, e)
+                    env.apply_edge_decision(t, decision)
+                    await sio.emit("agent_thought", {
+                        "run_id": run_id,
+                        "role": "truck",
+                        "agent_name": t.id,
+                        "content": (
+                            f"{t.id}: {e.kind} → {decision.get('action')} "
+                            f"{ {k: v for k, v in decision.items() if k != 'action'} }"
+                        ),
+                        "timestamp": time.time(),
+                    })
+
+            # ── A: Meta-Optimizer / Director intervention every 25 ticks ──────
+            if env._tick % 25 == 0:
+                digest = env.director_digest()
+                actions = await _sc_llm.run_director(digest) if use_llm else None
+                if actions is None:
+                    actions = env.fallback_director_actions()
+                notes = [env.apply_director_action(a) for a in actions]
+                generation = env._tick // 25
+                await sio.emit("fitness_update", {
+                    "generation": generation,
+                    "parent_fitness": round(env.gls, 2),
+                    "best_fitness": round(env.gls, 2),
+                    "mutation_type": "LLM" if use_llm else "math",
+                    "topology_diff": f"{len(env.trucks)} trucks",
+                    "cost_per_task": round((env.opex + env.capex) / max(1, sum(
+                        n.served for n in env._nodes_by_kind("demand"))), 4),
+                    "latency": 0.0,
+                })
+                for note in notes:
+                    await sio.emit("agent_thought", {
+                        "run_id": run_id,
+                        "role": "director",
+                        "content": f"[Director t{env._tick}] {note}",
+                        "timestamp": time.time(),
+                    })
+
+            # ── Emit state & alerts ───────────────────────────────────────────
+            gs = env.to_json()
+            await sio.emit("game_state_update", gs)
+            await sio.emit("tick_update", gs)
+            for al in env.alerts:
+                await sio.emit("alert", {"type": "alert", "message": al, "run_id": run_id})
+
+            if env.done:
+                await sio.emit("game_over", {
+                    "run_id": run_id,
+                    "fitness": env.get_fitness(),
+                    "gls": env.gls,
+                    "ticks": env._tick,
+                })
+                active_run["running"] = False
+                break
+
+            await asyncio.sleep(max(0.03, 0.25 / max(speed_mult, 0.1)))
         return
 
     # ── All other scenarios ───────────────────────────────────────────────────
@@ -718,12 +825,28 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
         await asyncio.sleep(0.5)
 
 
+ALLOWED_ENGINES = {"MATH", "DEAP", "LLM"}
+
+
+def _resolve_engine(payload: dict) -> str:
+    """Pick the EA engine. Precedence: payload.engine > payload.mutation_strategy > env var > 'MATH'.
+
+    `engine` is the user-facing alias; `mutation_strategy` is the legacy key kept for backwards
+    compatibility. Unknown values silently fall back to the env-var default so a typo cannot
+    crash a run.
+    """
+    candidate = payload.get("engine") or payload.get("mutation_strategy") \
+        or os.environ.get("ARENA_DEFAULT_ENGINE", "MATH")
+    candidate = str(candidate).upper()
+    return candidate if candidate in ALLOWED_ENGINES else "MATH"
+
+
 @app.post("/api/scenario/start")
 async def start_scenario(payload: dict) -> dict:
     global simulation_task
     scenario = _normalise_scenario(payload.get("scenario", "supply_chain"))
     mode = payload.get("mode", "autonomous")
-    run_id = f"run_{int(time.time())}"
+    run_id = payload.get("resume_run_id") or f"run_{int(time.time())}"
 
     if simulation_task and not simulation_task.done():
         simulation_task.cancel()
@@ -736,16 +859,62 @@ async def start_scenario(payload: dict) -> dict:
     active_run["scenario"] = scenario
     active_run["policy"] = payload.get("policy", "scripted")
     active_run["boundary_mode"] = payload.get("boundary_mode", "INTRA")
-    active_run["mutation_strategy"] = payload.get("mutation_strategy", "MATH")
+    active_run["mutation_strategy"] = _resolve_engine(payload)
     active_run["inter_ticks"] = int(payload.get("inter_ticks", 100))
+
+    if payload.get("resume_payload"):
+        # Caller is restoring state from /api/scenario/resume. The simulation_loop /
+        # orchestrator init will check active_run["resume_payload"] before seeding.
+        active_run["resume_payload"] = payload["resume_payload"]
+
     print(
         f"[start_scenario] scenario={scenario}, mode={mode}, "
         f"boundary_mode={active_run['boundary_mode']}, "
-        f"mutation_strategy={active_run['mutation_strategy']}, "
-        f"inter_ticks={active_run['inter_ticks']}"
+        f"engine={active_run['mutation_strategy']}, "
+        f"inter_ticks={active_run['inter_ticks']}, "
+        f"resume={bool(payload.get('resume_payload'))}"
     )
     simulation_task = asyncio.create_task(simulation_loop(scenario, mode, run_id))
-    return {"status": "started", "run_id": run_id, "scenario": scenario}
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "scenario": scenario,
+        "engine": active_run["mutation_strategy"],
+    }
+
+
+@app.get("/api/scenario/resume/{run_id}")
+async def resume_lookup(run_id: str) -> dict:
+    """Returns the latest EAGeneration checkpoint for run_id, so the client can
+    re-POST it to /api/scenario/start with `resume_payload=<row>` and
+    `resume_run_id=<run_id>` to warm-start the simulation.
+
+    Two-step design (lookup + restart) keeps the simulation_loop free of resume
+    coupling and lets the frontend mediate any UI confirmation.
+    """
+    from state.db import get_latest_ea_generation
+    row = await get_latest_ea_generation(run_id)
+    if row is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"No checkpoint found for run_id={run_id}")
+    return {
+        "run_id": run_id,
+        "scenario": row["scenario"],
+        "boundary_mode": row["boundary_mode"],
+        "engine": row["mutation_strategy"],
+        "from_generation": row["gen_id"],
+        "accepted_fitness": row["accepted_fitness"],
+        "genome_config": row["genome_json"],
+        "resume_payload": row,
+    }
+
+
+@app.get("/api/ea/generations/{run_id}")
+async def ea_generations_list(run_id: str, limit: int = 500) -> dict:
+    """Full generation history for a run — useful for charts and analytics."""
+    from state.db import get_ea_generations
+    rows = await get_ea_generations(run_id, limit=limit)
+    return {"run_id": run_id, "count": len(rows), "generations": rows}
 
 
 @app.post("/api/scenario/stop")

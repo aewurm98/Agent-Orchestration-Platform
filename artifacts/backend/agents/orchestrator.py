@@ -55,6 +55,9 @@ class ArenaState(TypedDict):
     mutation_strategy: str           # "MATH" heuristic perturbation | "LLM" meta-optimizer
     inter_ticks: int                 # episode length (ticks) used in INTER mode
     inter_episode_done: bool         # True when main.py has already run the episode; agent_step skips it
+    minibatch_fitness: float         # spec §3.1 — mean fitness across the seed mini-batch (manufacturing INTER)
+    minibatch_vector: list[float]    # element-wise mean fitness vector across the mini-batch
+    minibatch_metrics: dict          # averaged headline metrics for the meta-optimizer digest
 
 
 # ---------------------------------------------------------------------------
@@ -399,13 +402,25 @@ def evaluate(state: ArenaState) -> ArenaState:
     state["parent_fitness"] = state.get("current_fitness", 0.0)
 
     if state.get("scenario") == "manufacturing":
-        # For manufacturing: use real env fitness directly — no synthetic latency/cost noise
-        from agents import manufacturing_roles as _mr
-        _env = _mr._env_v2 or _mr._env
-        real_fitness = _env.get_fitness() if _env is not None else success_rate
+        # Spec §3.1: in INTER mode fitness is the mean over the seed mini-batch,
+        # computed by main.py before this node runs.  Fall back to the live env's
+        # single-episode fitness (INTRA mode or if no mini-batch was supplied).
+        mb_fitness = state.get("minibatch_fitness")
+        if mb_fitness is not None:
+            real_fitness = float(mb_fitness)
+        else:
+            from agents import manufacturing_roles as _mr
+            _env = _mr._env_v2 or _mr._env
+            real_fitness = _env.get_fitness() if _env is not None else success_rate
         state["current_fitness"] = round(real_fitness, 4)
         state["latency"] = round(latency, 3)
         state["cost"] = round(cost, 5)
+        # Seed the elitism baseline from the first real evaluation.  Manufacturing
+        # fitness is profit-dominated and can be large/negative, so a hardcoded 0.0
+        # parent would reject every real genome forever and freeze the EA.
+        if not state.get("fitness_history"):
+            state["parent_fitness"] = state["current_fitness"]
+            state["accepted_fitness"] = state["current_fitness"]
     elif state.get("scenario") == "supply_chain":
         # Read real supply chain env fitness (rolling throughput window)
         from game_envs import supply_chain as _sc_mod
@@ -569,6 +584,31 @@ async def mutate(state: ArenaState) -> ArenaState:
 
     mutation_label = mutation_strategy
 
+    if mutation_strategy == "DEAP":
+        # Population-based EA (selection + crossover + mutation + minibatch eval).
+        # Falls back to MATH on any error so the orchestrator never stalls.
+        try:
+            from agents import ea_integration as _ea
+            if not _ea.available():
+                raise RuntimeError("deap not installed")
+            update = _ea.run_one_generation(dict(state))
+            state["genome_config"] = update["genome_config"]
+            state["ea_population"] = update["ea_population"]
+            state["ea_fitness_cache"] = update["ea_fitness_cache"]
+            state["population_stats"] = update["population_stats"]
+            if update.get("ea_best_vector") is not None:
+                state["ea_best_vector"] = update["ea_best_vector"]
+            state["traces"] = state.get("traces", []) + update.get("traces_to_append", [])
+            mutation_label = "DEAP"
+        except _ea.StrategyNotImplemented as _se:
+            print(f"[DEAP] No strategy for scenario '{scenario}' — falling back to MATH ({_se})")
+            mutation_strategy = "MATH"
+            mutation_label = "DEAP→MATH(no-strategy)"
+        except Exception as _ea_exc:
+            print(f"[DEAP] FAILED ({_ea_exc!r}) — falling back to MATH")
+            mutation_strategy = "MATH"
+            mutation_label = "DEAP→MATH(fallback)"
+
     if mutation_strategy == "LLM":
         # ── LLM meta-optimizer path ───────────────────────────────────────────
         print(
@@ -665,18 +705,46 @@ async def mutate(state: ArenaState) -> ArenaState:
     return state
 
 
-def checkpoint(state: ArenaState) -> ArenaState:
-    """Serialize state snapshot; wire Redis here when ready."""
+async def checkpoint(state: ArenaState) -> ArenaState:
+    """Persist generation snapshot to the EAGeneration table so runs can resume.
+
+    Best-effort: any DB error is logged and swallowed so the simulation loop keeps
+    running. The in-memory orch_state is the source of truth during a live run;
+    the DB row is only consulted on /api/scenario/resume.
+    """
     key = f"arena:{state.get('run_id', 'default')}:gen:{state.get('generation', 0)}"
     state["checkpoint_key"] = key
+
+    mutation_type = state.get("agent_configs", [{}])[0].get("mutation_type", "semantic") \
+        if state.get("agent_configs") and state.get("scenario") != "manufacturing" else "semantic"
     GenerationLog(
         gen_id=state.get("generation", 0),
         parent_fitness=state.get("parent_fitness", 0.0),
         child_fitness=state.get("current_fitness", 0.0),
-        mutation_type=state.get("agent_configs", [{}])[0].get("mutation_type", "semantic")
-        if state.get("agent_configs") and state["scenario"] != "manufacturing" else "semantic",
+        mutation_type=mutation_type,
         topology_diff=state.get("topology_diff", "+0/0 edges"),
     )
+
+    try:
+        from state.db import save_ea_generation, EAGenerationIn
+        await save_ea_generation(EAGenerationIn(
+            run_id=str(state.get("run_id", "default")),
+            scenario=str(state.get("scenario", "")),
+            gen_id=int(state.get("generation", 0)),
+            parent_fitness=float(state.get("parent_fitness", 0.0)),
+            child_fitness=float(state.get("current_fitness", 0.0)),
+            accepted_fitness=float(state.get("accepted_fitness", 0.0)),
+            stagnation=int(state.get("stagnation_counter", 0)),
+            boundary_mode=str(state.get("boundary_mode", "INTRA")),
+            mutation_strategy=str(state.get("mutation_strategy", "MATH")),
+            genome_json=state.get("genome_config") or {},
+            fitness_vector_json=state.get("ea_best_vector") or [],
+            population_stats_json=state.get("population_stats") or {},
+            topology_diff=str(state.get("topology_diff", "")),
+        ))
+    except Exception as _persist_exc:
+        print(f"[checkpoint] DB write failed ({_persist_exc!r}) — continuing without persistence")
+
     return state
 
 
@@ -794,6 +862,9 @@ def _make_initial_state(
         boundary_mode=boundary_mode,
         mutation_strategy=mutation_strategy,
         inter_ticks=inter_ticks,
+        minibatch_fitness=None,
+        minibatch_vector=[],
+        minibatch_metrics={},
     )
 
 
@@ -828,6 +899,9 @@ async def run_one_generation(existing_state: dict) -> dict:
     existing_state.setdefault("mutation_strategy", "MATH")
     existing_state.setdefault("inter_ticks", 100)
     existing_state.setdefault("inter_episode_done", False)
+    existing_state.setdefault("minibatch_fitness", None)
+    existing_state.setdefault("minibatch_vector", [])
+    existing_state.setdefault("minibatch_metrics", {})
 
     graph = _build_step_graph()
     result = await graph.ainvoke(
