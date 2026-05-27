@@ -382,9 +382,17 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 else:
                     _genome = _MG.default()
 
-                _inter_env = _MEV2(_genome.to_env_config())
+                _env_cfg = _genome.to_env_config()
+                _env_cfg["simulation_length"] = T_max
+                _inter_env = _MEV2(_env_cfg)
+                mfg_set_env(_inter_env)
                 manufacturing_roles.set_active_env_v2(_inter_env)
                 _sgp = _SGP()
+
+                # Emit the fresh initial state of the new generation/episode immediately to reset the frontend
+                await sio.emit("game_state_update", _inter_env.to_json())
+                await sio.emit("tick_update", _inter_env.to_json())
+                await sio.emit("metrics_update", _inter_env.get_metrics())
 
                 # 2. Tick episode with per-tick emissions (yields event loop) ─
                 _tick_delay = max(0.01, 0.5 / max(speed_mult, 0.1)) / 10

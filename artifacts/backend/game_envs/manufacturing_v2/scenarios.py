@@ -64,7 +64,7 @@ FIRST_FACTORY_CONFIG: dict = {
     "grid_cols": 12,
     # ── Economy / episode ──────────────────────────────────────────────────────
     "starting_budget": 10_000.0,
-    "simulation_length": 1000,          # spec §0 — 1000-tick episodes
+    "simulation_length": 500,          # 500-tick episodes
     "order_arrival_rate": 12,
     "random_seed": 42,
     "execution_mode": "async_buffered",

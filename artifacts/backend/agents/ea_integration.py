@@ -146,12 +146,12 @@ def _mfg_random(rng: random.Random) -> dict:
 
 
 def _mfg_evaluate(genome: dict, state: dict) -> tuple[float, Optional[list[float]]]:
-    # Reuse the existing minibatch evaluator — already spec-compliant (3 seeds × 1000 ticks).
-    # Contract: evaluate_genome_minibatch(genome_dict, ticks=1000, seeds=DEFAULT_SEEDS)
+    # Reuse the existing minibatch evaluator — already spec-compliant (3 seeds × 500 ticks).
+    # Contract: evaluate_genome_minibatch(genome_dict, ticks=500, seeds=DEFAULT_SEEDS)
     #          returns {"fitness", "fitness_vector", "metrics", "per_seed"}.
     from evolution.minibatch import evaluate_genome_minibatch
     seeds = tuple(state.get("ea_minibatch_seeds") or (42, 101, 777))
-    ticks = int(state.get("ea_ticks_per_episode", 1000))
+    ticks = int(state.get("ea_ticks_per_episode", 500))
     try:
         result = evaluate_genome_minibatch(genome, ticks=ticks, seeds=seeds)
         scalar = float(result.get("fitness", 0.0))

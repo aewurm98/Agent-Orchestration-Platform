@@ -17,7 +17,7 @@ DEFAULT_SEEDS: tuple[int, ...] = (42, 101, 777)
 
 def evaluate_genome_minibatch(
     genome_dict: dict,
-    ticks: int = 1000,
+    ticks: int = 500,
     seeds: tuple[int, ...] = DEFAULT_SEEDS,
 ) -> dict:
     """

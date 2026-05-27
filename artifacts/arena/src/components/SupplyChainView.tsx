@@ -129,11 +129,12 @@ function Cell({ terrain, node, trucks }: { terrain: string; node?: SCNode; truck
 
   return (
     <div
-      className="relative flex items-center justify-center"
+      className="relative flex items-center justify-center aspect-square w-full h-full min-w-0 min-h-0 overflow-hidden"
       style={{
         backgroundColor: TERRAIN_BG[terrain] ?? "#f7f3ea",
         boxShadow: ring ? `inset 0 0 0 1.5px ${ring}` : undefined,
         borderRadius: 2,
+        aspectRatio: "1 / 1",
       }}
       title={title}
     >

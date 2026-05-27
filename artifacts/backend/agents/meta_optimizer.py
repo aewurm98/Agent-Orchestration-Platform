@@ -107,7 +107,7 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "manufacturing simulation.\n"
             "The simulation operates on a fixed 12x12 spatial grid.\n"
             "Your goal is to maximize the overall Fitness Score over a mini-batch of "
-            "stochastic episodes (1000 ticks each).\n\n"
+            "stochastic episodes (500 ticks each).\n\n"
             "FITNESS TARGET & ECONOMICS:\n"
             "The final Fitness Score is a weighted calculation:\n"
             "(50% Profit) + (30% Throughput) - (15% Missed Orders) - (5% Idle Agents) + (5% Machine Util).\n"
