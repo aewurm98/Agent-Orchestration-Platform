@@ -403,13 +403,10 @@ class SupplyChainEnv:
 
     # ── core tick (programmatic phases A/B/D; exceptions returned for LLM) ─────
 
-    def step(self, _action: Any = None) -> "GridState":
-        """Advance one programmatic tick.  Returns a GridState; pending edge
-        exceptions are exposed via self.pending_exceptions for the loop to
-        resolve with the LLM brain (or fallback)."""
-        self._tick += 1
+    def step_agents(self) -> None:
+        """Advance agent updates and state machines. Part B of the Spec §2.1 loop."""
         self.alerts = []
-        self.pending_exceptions: list[tuple[Truck, EdgeException]] = []
+        self.pending_exceptions = []
 
         # ── B. Edge agent updates ─────────────────────────────────────────────
         for t in self.trucks:
@@ -440,6 +437,9 @@ class SupplyChainEnv:
                 t.last_event = f"⚠ {e.kind}"
                 self.pending_exceptions.append((t, e))
 
+    def step_nodes(self) -> None:
+        """Advance nodes and execute ledger bookkeeping. Part D of the Spec §2.1 loop."""
+        self._tick += 1
         # ── D. Node updates ───────────────────────────────────────────────────
         self._update_nodes()
 
@@ -448,6 +448,14 @@ class SupplyChainEnv:
         if self._tick >= EPISODE_TICKS:
             self.done = True
 
+    def step(self, _action: Any = None) -> "GridState":
+        """Advance one full programmatic tick (synchronous fallback compatibility)."""
+        self.step_agents()
+        if self.pending_exceptions:
+            for t, e in self.pending_exceptions:
+                decision = self.fallback_edge_decision(t, e)
+                self.apply_edge_decision(t, decision)
+        self.step_nodes()
         return self._state()
 
     def _step_autopilot(self, t: Truck) -> None:

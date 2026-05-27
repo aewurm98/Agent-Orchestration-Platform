@@ -130,12 +130,26 @@ class RecipeEngine:
                 recipe = RECIPES.get(machine.machine_type, {})
                 reject_rate = recipe.get("reject_rate", 0.0)
                 if self._rng.random() < reject_rate:
-                    reject = Item(
-                        id=self._new_item_id("reject"),
-                        item_type=ItemType.REJECT,
-                    )
-                    machine.output_queue.append(reject)
-                    produced.append(reject)
+                    if machine.machine_type == MachineType.QC:
+                        reject = Item(
+                            id=self._new_item_id("reject"),
+                            item_type=ItemType.REJECT,
+                        )
+                        machine.output_queue.append(reject)
+                        produced.append(reject)
+                        alerts.append({
+                            "type": "alert",
+                            "event": "qc_reject",
+                            "machine_id": machine.id,
+                            "message": f"QC Station {machine.id} rejected subassembly to scrap",
+                        })
+                    else:
+                        alerts.append({
+                            "type": "alert",
+                            "event": "machine_reject",
+                            "machine_id": machine.id,
+                            "message": f"{machine.machine_type.value.title()} {machine.id} material reject (zero output)",
+                        })
                 else:
                     for out_type, qty in recipe.get("outputs", []):
                         for _ in range(qty):

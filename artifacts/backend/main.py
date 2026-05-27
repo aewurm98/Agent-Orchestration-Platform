@@ -605,40 +605,19 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                 continue
             speed_mult = float(active_run.get("speed_multiplier", 1.0))
 
-            # ── A/B/D: programmatic tick (returns pending edge exceptions) ────
-            env.step()
-
-            # ── C: local exception resolution (concurrent LLM batching) ───────
-            exceptions = getattr(env, "pending_exceptions", [])
-            if exceptions:
-                if use_llm:
-                    ctxs = [env.build_exception_context(t, e) for t, e in exceptions]
-                    results = await asyncio.gather(
-                        *[_sc_llm.resolve_edge_exception(c) for c in ctxs]
-                    )
-                else:
-                    results = [None] * len(exceptions)
-                for (t, e), res in zip(exceptions, results):
-                    decision = res or env.fallback_edge_decision(t, e)
-                    env.apply_edge_decision(t, decision)
-                    await sio.emit("agent_thought", {
-                        "run_id": run_id,
-                        "role": "truck",
-                        "agent_name": t.id,
-                        "content": (
-                            f"{t.id}: {e.kind} → {decision.get('action')} "
-                            f"{ {k: v for k, v in decision.items() if k != 'action'} }"
-                        ),
-                        "timestamp": time.time(),
-                    })
-
-            # ── A: Meta-Optimizer / Director intervention every 25 ticks ──────
-            if env._tick % 25 == 0:
+            # ── A. Meta-Optimizer / Director intervention every 25 ticks ──────
+            if env._tick > 0 and env._tick % 25 == 0:
                 digest = env.director_digest()
-                actions = await _sc_llm.run_director(digest) if use_llm else None
-                if actions is None:
-                    actions = env.fallback_director_actions()
-                notes = [env.apply_director_action(a) for a in actions]
+                try:
+                    actions = await _sc_llm.run_director(digest) if use_llm else None
+                    if actions is None:
+                        actions = env.fallback_director_actions()
+                    notes = [env.apply_director_action(a) for a in actions]
+                except Exception as exc:
+                    env.penalties += 500.0  # validation fine
+                    note = f"rejected director actions ({exc}) — $500 fine"
+                    notes = [note]
+                
                 generation = env._tick // 25
                 await sio.emit("fitness_update", {
                     "generation": generation,
@@ -657,6 +636,47 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                         "content": f"[Director t{env._tick}] {note}",
                         "timestamp": time.time(),
                     })
+
+            # ── B. Programmatic Edge Agent Updates ────────────────────────────
+            env.step_agents()
+
+            # ── C. Local Exception Resolution (Concurrent LLM Batching) ───────
+            exceptions = getattr(env, "pending_exceptions", [])
+            if exceptions:
+                if use_llm:
+                    ctxs = [env.build_exception_context(t, e) for t, e in exceptions]
+                    
+                    async def safe_resolve_edge(truck, exception, ctx_data):
+                        try:
+                            res = await _sc_llm.resolve_edge_exception(ctx_data)
+                            return res or env.fallback_edge_decision(truck, exception)
+                        except Exception as val_exc:
+                            truck.ledger -= 500.0  # validation penalty
+                            env.penalties += 500.0
+                            env.alerts.append(f"{truck.id} validation error: {val_exc} (-$500 fine)")
+                            return {"action": "wait", "ticks": 5}
+                    
+                    results = await asyncio.gather(
+                        *[safe_resolve_edge(t, e, c) for (t, e), c in zip(exceptions, ctxs)]
+                    )
+                else:
+                    results = [env.fallback_edge_decision(t, e) for t, e in exceptions]
+                
+                for (t, e), decision in zip(exceptions, results):
+                    env.apply_edge_decision(t, decision)
+                    await sio.emit("agent_thought", {
+                        "run_id": run_id,
+                        "role": "truck",
+                        "agent_name": t.id,
+                        "content": (
+                            f"{t.id}: {e.kind} → {decision.get('action')} "
+                            f"{ {k: v for k, v in decision.items() if k != 'action'} }"
+                        ),
+                        "timestamp": time.time(),
+                    })
+
+            # ── D. Node Updates & GLS Bookkeeping ─────────────────────────────
+            env.step_nodes()
 
             # ── Emit state & alerts ───────────────────────────────────────────
             gs = env.to_json()

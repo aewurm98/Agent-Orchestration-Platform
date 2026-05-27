@@ -17,54 +17,13 @@ const SCENARIOS = [
     desc: "Supplier → Warehouses → Distributor → Retail shelves. EA learns to meet customer demand without stockouts.",
   },
   {
-    value: "Disaster Relief",
-    label: "Disaster Relief",
-    desc: "Grid-based emergency response. Agents allocate scarce resources to incidents across a map.",
-  },
-  {
-    value: "Peer Agents",
-    label: "Peer Agents",
-    desc: "Agent-to-agent negotiation. Two peers bargain over a contested resource.",
-  },
-  {
     value: "Manufacturing",
     label: "Manufacturing",
     desc: "10×10 factory floor with 6 machine types and 5 agent roles. Flagship VC-demo scenario.",
   },
 ] as const;
 
-const BOUNDARY_MODES = [
-  {
-    value: "INTRA" as const,
-    label: "INTRA",
-    desc: "Single environment, continuous evolution within one scenario. Best for tuning a single workflow.",
-  },
-  {
-    value: "INTER" as const,
-    label: "INTER",
-    desc: "Cross-environment evolution. Topology transfers between scenario resets — tests generalisation.",
-  },
-];
-
-const MUTATION_STRATEGIES = [
-  {
-    value: "MATH" as const,
-    label: "MATH",
-    desc: "Deterministic genome mutation via formulas. Fast, cheap, reproducible. Default.",
-  },
-  {
-    value: "DEAP" as const,
-    label: "DEAP",
-    desc: "Population-based evolutionary algorithm (selection + crossover + mutation). Works in both INTRA and INTER, costs ~6× more CPU than MATH, no API key required.",
-  },
-  {
-    value: "LLM" as const,
-    label: "LLM",
-    desc: "An LLM proposes mutations using reasoning. Requires OPENAI_API_KEY or ANTHROPIC_API_KEY (auto-detected). INTER mode recommended.",
-  },
-];
-
-type MutationStrategy = (typeof MUTATION_STRATEGIES)[number]["value"];
+type MutationStrategy = "MATH" | "DEAP" | "LLM";
 
 const TAB_INFO: Record<string, string> = {
   DAG: "Topology of agent ↔ tool connections. Click a node to inspect its tools, recent actions, and system prompt.",
@@ -100,8 +59,8 @@ export default function Arena() {
   const { isRunning, currentGeneration, emitScenarioSelect, emitStartEvolution, clearSessionState, mfgState } = useSocket();
   const [scenario, setScenario] = useState("Supply Chain");
   const [boundaryMode, setBoundaryMode] = useState<"INTRA" | "INTER">("INTRA");
-  const [mutationStrategy, setMutationStrategy] = useState<MutationStrategy>("MATH");
-  const [interTicks, setInterTicks] = useState(100);
+  const [mutationStrategy, setMutationStrategy] = useState<MutationStrategy>("LLM");
+  const [interTicks, setInterTicks] = useState(500);
   const [isHitl, setIsHitl] = useState(false);
   const [sidePanelOpen, setSidePanelOpen] = useState(true);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -140,6 +99,13 @@ export default function Arena() {
   const handleScenarioChange = (val: string) => {
     setScenario(val);
     emitScenarioSelect(val);
+    if (val === "Manufacturing") {
+      setBoundaryMode("INTER");
+      setInterTicks(1000);
+    } else {
+      setBoundaryMode("INTRA");
+      setInterTicks(500);
+    }
   };
 
   const selectTriggerClass =
@@ -179,90 +145,7 @@ export default function Arena() {
             </SelectContent>
           </Select>
 
-          {/* Boundary mode selector */}
-          <Select
-            value={boundaryMode}
-            onValueChange={(v) => {
-              const bm = v as "INTRA" | "INTER";
-              setBoundaryMode(bm);
-              // LLM is INTRA-disabled (needs episodic eval); fall back to MATH
-              // when the user switches to INTRA while LLM was selected. DEAP
-              // works in both modes so it should be left alone.
-              if (bm === "INTRA" && mutationStrategy === "LLM") setMutationStrategy("MATH");
-            }}
-            disabled={isRunning}
-          >
-            <SelectTrigger
-              className={`w-[110px] ${selectTriggerClass}`}
-              data-testid="select-boundary-mode"
-            >
-              <SelectValue placeholder="Boundary">
-                <span className="font-mono">{boundaryMode}</span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent className={selectContentClass}>
-              {BOUNDARY_MODES.map((b) => (
-                <SelectItem key={b.value} value={b.value}>
-                  <OptionRow label={b.label} desc={b.desc} mono />
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
 
-          {/* Mutation strategy selector */}
-          <Select
-            value={mutationStrategy}
-            onValueChange={(v) => setMutationStrategy(v as MutationStrategy)}
-            disabled={isRunning}
-          >
-            <SelectTrigger
-              className={`w-[110px] ${selectTriggerClass}`}
-              data-testid="select-mutation-strategy"
-            >
-              <SelectValue placeholder="Engine">
-                <span className="font-mono">{mutationStrategy}</span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent className={selectContentClass}>
-              {MUTATION_STRATEGIES.map((m) => (
-                <SelectItem
-                  key={m.value}
-                  value={m.value}
-                  disabled={m.value === "LLM" && boundaryMode === "INTRA"}
-                >
-                  <OptionRow label={m.label} desc={m.desc} mono />
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          {/* Episode length — only visible in INTER mode */}
-          {boundaryMode === "INTER" && (
-            <Tooltip delayDuration={250}>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[#6b6359] uppercase tracking-wider cursor-help">Ep. Length</span>
-                  <input
-                    type="number"
-                    min={10}
-                    max={500}
-                    step={10}
-                    value={interTicks}
-                    onChange={(e) => setInterTicks(Math.max(10, Math.min(500, Number(e.target.value))))}
-                    disabled={isRunning}
-                    className="w-[60px] h-9 text-xs bg-white border border-[#ebe5d6] text-[#14120e] rounded-lg px-2 font-mono focus:outline-none focus:border-[#14120e] disabled:opacity-40"
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent
-                side="bottom"
-                sideOffset={6}
-                className="max-w-[240px] text-[11px] leading-snug bg-[#14120e] text-[#f4f0e7] border-[#14120e]"
-              >
-                Ticks per episode — how many simulation steps run before topology transfers in INTER mode.
-              </TooltipContent>
-            </Tooltip>
-          )}
 
           {/* Divider between config selectors and run controls */}
           <div className="w-px h-5 bg-[#ebe5d6] mx-2" />
