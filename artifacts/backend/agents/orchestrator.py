@@ -620,10 +620,33 @@ async def mutate(state: ArenaState) -> ArenaState:
             from agents import manufacturing_roles as _mr
             _meta_env = _mr._env_v2 if scenario == "manufacturing" else None
             delta = await query_meta_optimizer(state, _meta_env)
-            state["genome_config"] = apply_genome_delta(
-                state.get("genome_config", {}), delta, scenario
-            )
-            reasoning = state.get("genome_config", {}).get("_llm_reasoning", "")
+            
+            if isinstance(delta, list) and scenario == "manufacturing":
+                from evolution.minibatch import evaluate_genome_minibatch
+                seeds = tuple(state.get("ea_minibatch_seeds") or (42, 101, 777))
+                best_cfg = None
+                best_fit = -float('inf')
+                best_reasoning = ""
+                
+                print(f"[LLM] Evaluating {len(delta)} candidates via minibatch...")
+                for d in delta:
+                    cand_cfg = apply_genome_delta(state.get("genome_config", {}), d, scenario)
+                    res = evaluate_genome_minibatch(cand_cfg, ticks=500, seeds=seeds)
+                    if res["fitness"] > best_fit:
+                        best_fit = res["fitness"]
+                        best_cfg = cand_cfg
+                        best_reasoning = cand_cfg.get("_llm_reasoning", "")
+                
+                if best_cfg is not None:
+                    state["genome_config"] = best_cfg
+                    reasoning = best_reasoning
+                else:
+                    reasoning = ""
+            else:
+                state["genome_config"] = apply_genome_delta(
+                    state.get("genome_config", {}), delta, scenario
+                )
+                reasoning = state.get("genome_config", {}).get("_llm_reasoning", "")
             print(f"[LLM] Meta-optimizer succeeded — reasoning: {reasoning[:120] if reasoning else '(none)'}")
             if reasoning:
                 state["traces"] = state.get("traces", []) + [{

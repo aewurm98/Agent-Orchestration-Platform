@@ -546,7 +546,8 @@ class SupplyChainEnv:
         if node.kind == "demand" and t.cargo > 0:
             sold = min(t.cargo, max(node.accumulated_demand, t.cargo))
             sold = min(sold, t.cargo)
-            rev = sold * node.current_price
+            health_factor = max(0.0, t.cargo_health / 100.0)
+            rev = sold * node.current_price * health_factor
             self.revenue += rev
             t.ledger += rev
             node.accumulated_demand = max(0, node.accumulated_demand - sold)
@@ -565,7 +566,13 @@ class SupplyChainEnv:
                 moved = min(space, t.cargo)
                 node.inventory += moved
                 t.cargo -= moved
-                t.last_event = f"stored {moved}u @ {node.id}"
+                
+                health_factor = max(0.0, t.cargo_health / 100.0)
+                reward = moved * (DEMAND_BASE_PRICE * 0.3) * health_factor
+                self.revenue += reward
+                t.ledger += reward
+                
+                t.last_event = f"stored {moved}u (+${reward:.0f})"
             t.target_id = None
             return True
 
@@ -727,24 +734,32 @@ class SupplyChainEnv:
         Out-of-bounds / malformed actions are penalised and ignored (spec §5.1)."""
         kind = action.get("action")
         try:
-            if kind == "build_infrastructure":
-                ntype = action.get("node_type") or action.get("type")
-                x, y = int(action.get("x", -1)), int(action.get("y", -1))
-                if ntype not in INFRA or not (0 <= x < GRID and 0 <= y < GRID):
-                    raise ValueError("bad infrastructure spec")
-                spec = INFRA[ntype]
-                cost = spec["cost"]
+            if kind == "upgrade_route":
+                road_type = action.get("road_type") or action.get("type")
+                start_id = action.get("start_node_id")
+                end_id = action.get("end_node_id")
+                if not start_id or not end_id or road_type not in ("highway", "local_road"):
+                    raise ValueError("bad upgrade_route spec")
+                start_node = self.nodes.get(start_id)
+                end_node = self.nodes.get(end_id)
+                if not start_node or not end_node:
+                    raise ValueError("unknown node for upgrade_route")
+                path = astar(self.grid, (start_node.x, start_node.y), (end_node.x, end_node.y))
+                if not path:
+                    raise ValueError("no path to upgrade")
+                path = [(start_node.x, start_node.y)] + path
+                cost = 0.0
+                upgraded = 0
+                for (cx, cy) in path:
+                    curr = self.grid[cy][cx]
+                    if curr != "highway" and curr != "obstacle":
+                        tile_cost = 1000.0 if road_type == "highway" else 500.0
+                        cost += tile_cost
+                        self.grid[cy][cx] = road_type
+                        upgraded += 1
                 self.capex += cost
                 self.capital -= cost
-                if ntype == "Toll_Road":
-                    self.grid[y][x] = "highway"
-                    note = f"built Toll_Road @({x},{y})"
-                else:
-                    nid = f"warehouse_{len([n for n in self.nodes.values() if n.kind=='warehouse'])}"
-                    self.nodes[nid] = Node(nid, "warehouse", x=x, y=y, capacity=spec["capacity"])
-                    if self.grid[y][x] == "obstacle":
-                        self.grid[y][x] = "off_road"
-                    note = f"built {ntype} {nid} @({x},{y})"
+                note = f"upgraded {upgraded} tiles on route {start_id}->{end_id} to {road_type} (${cost:.0f})"
             elif kind == "spawn_fleet":
                 count = max(0, min(10, int(action.get("count", 1))))
                 start = action.get("start_node_id")
@@ -777,8 +792,7 @@ class SupplyChainEnv:
             else:
                 raise ValueError(f"unknown tool {kind}")
         except Exception as exc:
-            self.penalties += 500.0  # spec §5.1 validation fine
-            return f"rejected {kind} ({exc}) — $500 fine"
+            return f"rejected {kind} ({exc})"
         self.director_log.append({"tick": self._tick, "note": note})
         return note
 

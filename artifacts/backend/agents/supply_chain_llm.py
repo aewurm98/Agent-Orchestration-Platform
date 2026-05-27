@@ -74,12 +74,11 @@ class EdgeDecision(BaseModel):
 
 class DirectorAction(BaseModel):
     action: str
-    node_type: Optional[str] = None
     type: Optional[str] = None
-    x: Optional[int] = None
-    y: Optional[int] = None
     count: Optional[int] = None
     start_node_id: Optional[str] = None
+    end_node_id: Optional[str] = None
+    road_type: Optional[str] = None
     group_id: Optional[str] = None
     trait: Optional[str] = None
     new_value: Optional[str] = None
@@ -89,14 +88,12 @@ class DirectorAction(BaseModel):
     @root_validator(pre=True)
     def validate_director_action(cls, values):
         action = values.get("action")
-        if action == "build_infrastructure":
-            ntype = values.get("node_type") or values.get("type")
-            if ntype not in ("Micro_Fulfillment", "Mega_Warehouse", "Toll_Road"):
-                raise ValueError(f"invalid node_type {ntype}")
-            x = values.get("x")
-            y = values.get("y")
-            if x is None or y is None or not (0 <= int(x) < 20) or not (0 <= int(y) < 20):
-                raise ValueError(f"invalid coordinates ({x}, {y})")
+        if action == "upgrade_route":
+            road_type = values.get("road_type") or values.get("type")
+            if road_type not in ("highway", "local_road"):
+                raise ValueError(f"invalid road_type {road_type}")
+            if not values.get("start_node_id") or not values.get("end_node_id"):
+                raise ValueError("upgrade_route requires start_node_id and end_node_id")
         elif action == "spawn_fleet":
             count = values.get("count")
             if count is None or int(count) <= 0:
@@ -222,7 +219,7 @@ GAME MECHANICS & PHYSICS:
 
 YOUR ACTION SPACE (TOOLS):
 You may call one or more of the following tools to evolve the simulation:
-1. `build_infrastructure(type: str, x: int, y: int)`
+1. `upgrade_route(start_node_id: str, end_node_id: str, road_type: str)`
 2. `mutate_persona(group_id: str, trait: str, new_value: str)`
 3. `spawn_fleet(count: int, start_node_id: str)`
 4. `adjust_incentives(node_id: str, price_mod: float)`
@@ -234,7 +231,7 @@ INSTRUCTIONS:
 
 Respond with a JSON array containing zero or more tool calls (with no surrounding text or formatting other than a JSON block):
 [
-  {{"action": "build_infrastructure", "node_type": "Micro_Fulfillment|Mega_Warehouse|Toll_Road", "x": <int>, "y": <int>}},
+  {{"action": "upgrade_route", "start_node_id": "<node_id>", "end_node_id": "<node_id>", "road_type": "highway|local_road"}},
   {{"action": "mutate_persona", "group_id": "<truck_id>|all", "trait": "Risk_Tolerance|Greed", "new_value": "Low|Medium|High"}},
   {{"action": "spawn_fleet", "count": <int>, "start_node_id": "<node_id>"}},
   {{"action": "adjust_incentives", "node_id": "<node_id>", "price_mod": <float>}}

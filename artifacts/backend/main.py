@@ -659,10 +659,8 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
                             res = await _sc_llm.resolve_edge_exception(ctx_data)
                             return res or env.fallback_edge_decision(truck, exception)
                         except Exception as val_exc:
-                            truck.ledger -= 500.0  # validation penalty
-                            env.penalties += 500.0
-                            env.alerts.append(f"{truck.id} validation error: {val_exc} (-$500 fine)")
-                            return {"action": "wait", "ticks": 5}
+                            env.alerts.append(f"{truck.id} validation error: {val_exc} (defaulting to ignore)")
+                            return {"action": "ignore"}
                     
                     results = await asyncio.gather(
                         *[safe_resolve_edge(t, e, c) for (t, e), c in zip(exceptions, ctxs)]

@@ -123,13 +123,13 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "6. Inspected Unit -> Packaging -> Finished Product\n\n"
             "PHYSICS & TRADEOFFS:\n"
             "- Agents physically move items on the grid.\n"
-            "- Too many agents = pathfinding traffic jams and bloated wage costs.\n"
+            "- Too many agents = pathfinding traffic jams and bloated wage costs. Hiring incurs permanent 100% per-tick wage.\n"
             "- Too few agents = idle machines and supply chain bottlenecks.\n"
             "- Speed Multipliers: 'low' (slow, cheap, reliable), 'normal', 'high' (fast, 2x power cost, 2.5x fail rate).\n"
             "- High failure rates require more Engineering agents to repair broken machines, draining wages.\n\n"
             "YOUR ACTION SPACE (mutate_genome):\n"
-            "Output a single JSON object setting the ENTIRE genome for the next generation.\n"
-            "1. Agent Counts: procurement (1-5), operations (1-8), engineering (1-3), sales (1-4).\n"
+            "Output a JSON array containing exactly 3 to 5 distinct configuration objects setting the ENTIRE genome for the next generation.\n"
+            "1. Agent Counts: procurement (1-5), operations (1-8), engineering (1-3), sales (1-4). WARNING: You may only increase or decrease a specific agent role count by a maximum of ±1 per generation.\n"
             "2. Machine Speeds: map all 6 machine IDs ('smelter_1','circuit_fab_1','press_1','assembly_1','qc_1','packaging_1') to 'low', 'normal', or 'high'.\n"
             "3. Order Arrival Rate (5.0 to 30.0). Lower = orders arrive faster. WARNING: accepting too "
             "many orders when your pipeline is slow causes catastrophic Late/Missed penalties."
@@ -149,15 +149,23 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "machine_speeds.*": "string low|normal|high — low: slow/cheap/reliable, high: fast/2× power/2.5× fail",
             "order_arrival_rate": "float 5.0–30.0 — avg ticks between order arrivals (lower = more orders)",
         },
-        "return_format": """{
-  "reasoning": "<1-2 sentence explanation>",
-  "agent_counts": {"procurement": <int|omit>, "operations": <int|omit>, "engineering": <int|omit>, "sales": <int|omit>},
-  "machine_speeds": {"smelter_1": "<low|normal|high|omit>", "circuit_fab_1": "...", "press_1": "...", "assembly_1": "...", "qc_1": "...", "packaging_1": "..."},
-  "order_arrival_rate": <float|null>
-}""",
+        "return_format": """[
+  {
+    "reasoning": "<1-2 sentence explanation>",
+    "agent_counts": {"procurement": <int|omit>, "operations": <int|omit>, "engineering": <int|omit>, "sales": <int|omit>},
+    "machine_speeds": {"smelter_1": "<low|normal|high|omit>", "circuit_fab_1": "...", "press_1": "...", "assembly_1": "...", "qc_1": "...", "packaging_1": "..."},
+    "order_arrival_rate": <float|null>
+  }
+] (Output 3 to 5 configuration objects in the array)""",
     },
 
     "supply_chain": {
+        "system_prompt": (
+            "You are the Supply Chain Meta-Optimizer, an AI architect managing a continuous "
+            "logistics simulation.\n"
+            "Your goal is to maximize the Global Ledger Score (GLS) by mutating the network parameters.\n\n"
+            "CRITICAL: You may only mutate ONE system parameter per generation. Do NOT change multiple values at once. This ensures we can scientifically track the casualty of your changes.\n"
+        ),
         "description": (
             "A supply chain network of nodes managing inventory replenishment across "
             "multiple stages to meet stochastic demand while minimising stockout "
