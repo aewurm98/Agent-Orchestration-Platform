@@ -129,6 +129,7 @@ class ManufacturingGenome:
         """Produce an EnvironmentConfig dict for ManufacturingEnvV2.reset()."""
         config = copy.deepcopy(self._base_config)
         config["order_arrival_rate"] = int(round(self.order_arrival_rate))
+        config["simulation_length"] = 500
 
         for m_cfg in config.get("machines", []):
             mid = m_cfg["id"]

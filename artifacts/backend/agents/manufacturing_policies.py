@@ -334,18 +334,18 @@ class ScriptedGreedyPolicy(BasePolicy):
     ) -> Optional[Machine]:
         if not agent.inventory:
             return None
-        carrying_types = {i.item_type for i in agent.inventory}
+        carried_item = agent.inventory[0].item_type
         candidates = []
         for m in world.machines.values():
             if m.state in (MachineState.BROKEN, MachineState.OFFLINE):
                 continue
-            if len(m.input_queue) >= input_threshold:
-                continue
             recipe = RECIPES.get(m.machine_type, {})
-            needed_types = {itype for itype, _ in recipe.get("inputs", [])}
-            if carrying_types & needed_types:
-                dist = abs(m.row - agent.row) + abs(m.col - agent.col)
-                candidates.append((dist, m))
+            req_qty = next((q for t, q in recipe.get("inputs", []) if t == carried_item), 0)
+            if req_qty > 0:
+                current_count = sum(1 for i in m.input_queue if i.item_type == carried_item)
+                if current_count < req_qty * 2:
+                    dist = abs(m.row - agent.row) + abs(m.col - agent.col)
+                    candidates.append((dist, m))
         if not candidates:
             return None
         return min(candidates, key=lambda x: x[0])[1]

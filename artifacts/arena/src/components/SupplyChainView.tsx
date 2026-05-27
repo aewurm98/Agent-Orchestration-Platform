@@ -87,8 +87,11 @@ function GridBoard({ sc }: { sc: SupplyChainV2State }) {
   return (
     <div className="rounded-2xl border border-[#ebe5d6] bg-white p-2 min-h-0 overflow-hidden flex items-center justify-center">
       <div
-        className="grid gap-px aspect-square w-full max-h-full"
-        style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}
+        className="grid gap-px w-full aspect-square mx-auto"
+        style={{ 
+          gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${size}, minmax(0, 1fr))`
+        }}
       >
         {Array.from({ length: size }).map((_, y) =>
           Array.from({ length: size }).map((__, x) => {
@@ -129,18 +132,17 @@ function Cell({ terrain, node, trucks }: { terrain: string; node?: SCNode; truck
 
   return (
     <div
-      className="relative flex items-center justify-center aspect-square w-full h-full min-w-0 min-h-0 overflow-hidden"
+      className="relative flex items-center justify-center w-full h-full min-w-0 min-h-0 overflow-hidden"
       style={{
         backgroundColor: TERRAIN_BG[terrain] ?? "#f7f3ea",
         boxShadow: ring ? `inset 0 0 0 1.5px ${ring}` : undefined,
         borderRadius: 2,
-        aspectRatio: "1 / 1",
       }}
       title={title}
     >
       {content && (
         <span
-          className="leading-none"
+          className="leading-none select-none"
           style={{
             fontSize: "clamp(6px, 0.9vw, 12px)",
             animation: truck?.state === "THINKING" ? "packet-flow 1.2s ease-in-out infinite" : undefined,

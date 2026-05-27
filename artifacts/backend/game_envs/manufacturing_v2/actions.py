@@ -218,10 +218,23 @@ def apply_micro_action(
             return ActionResult(False, "Not adjacent to machine")
         if machine.state == MachineState.BROKEN:
             return ActionResult(False, "Machine is broken")
-        if len(machine.input_queue) >= 5:
-            return ActionResult(False, "Machine input queue full (max 5)")
         if not agent.inventory:
             return ActionResult(False, "Nothing to load")
+        item = agent.inventory[0]
+        
+        from .recipes import RECIPES
+        recipe = RECIPES.get(machine.machine_type)
+        if recipe:
+            req_qty = next((q for t, q in recipe.get("inputs", []) if t == item.item_type), 0)
+            if req_qty == 0:
+                return ActionResult(False, f"Machine does not accept {item.item_type.value}")
+            curr_qty = sum(1 for i in machine.input_queue if i.item_type == item.item_type)
+            if curr_qty >= req_qty * 2:
+                return ActionResult(False, f"Machine has enough {item.item_type.value}")
+        else:
+            if len(machine.input_queue) >= 10:
+                return ActionResult(False, "Machine input queue full")
+
         item = agent.inventory.pop(0)
         item.carrier_id = None
         item.row = None
