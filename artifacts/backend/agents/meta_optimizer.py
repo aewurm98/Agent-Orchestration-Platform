@@ -111,9 +111,9 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "FITNESS TARGET & ECONOMICS:\n"
             "The final Fitness Score is a weighted calculation:\n"
             "(50% Profit) + (30% Throughput) - (15% Missed Orders) - (5% Idle Agents) + (5% Machine Util).\n"
-            "- Revenues: Standard Product (+$200), Rush Order (+$300), Scrap (+$5).\n"
+            "- Revenues: Standard Product (+$800), Rush Order (+$1200), Scrap (+$5).\n"
             "- OpEx: Agent Wages (Eng: $5/t, Sales: $4/t, Proc: $3/t, Ops: $2/t), Material Costs, Machine Power.\n"
-            "- Penalties: Late Delivery (-$20/t), Missed Order (-$50 flat).\n\n"
+            "- Penalties: Late Delivery (-$20/t), Missed Order (-$10 flat).\n\n"
             "THE PRODUCTION DAG:\n"
             "1. Raw Ore -> Smelter -> Ingot\n"
             "2. Raw Silicon -> Circuit Fab -> Circuit\n"
@@ -129,7 +129,7 @@ _GENOME_SCHEMAS: dict[str, dict] = {
             "- High failure rates require more Engineering agents to repair broken machines, draining wages.\n\n"
             "YOUR ACTION SPACE (mutate_genome):\n"
             "Output a JSON array containing exactly 3 to 5 distinct configuration objects setting the ENTIRE genome for the next generation.\n"
-            "1. Agent Counts: procurement (1-5), operations (1-8), engineering (1-3), sales (1-4). WARNING: You may only increase or decrease a specific agent role count by a maximum of ±1 per generation.\n"
+            "1. Agent Counts: procurement (1-5), operations (1-8), engineering (1-3), sales (1-4).\n"
             "2. Machine Speeds: map all 6 machine IDs ('smelter_1','circuit_fab_1','press_1','assembly_1','qc_1','packaging_1') to 'low', 'normal', or 'high'.\n"
             "3. Order Arrival Rate (5.0 to 30.0). Lower = orders arrive faster. WARNING: accepting too "
             "many orders when your pipeline is slow causes catastrophic Late/Missed penalties."
@@ -298,6 +298,8 @@ def build_episode_digest(state: dict, env: Any) -> dict:
             "miss_rate": mb_metrics.get("miss_rate"),
             "machine_utilization": mb_metrics.get("avg_machine_utilization"),
             "agent_idle_ratio": mb_metrics.get("avg_agent_idle_ratio"),
+            "role_active_ratios": mb_metrics.get("role_active_ratios"),
+            "machine_diagnostics": mb_metrics.get("machine_diagnostics"),
         }
     elif scenario == "manufacturing" and env is not None and hasattr(env, "world"):
         try:
@@ -329,7 +331,19 @@ def _build_user_prompt(state: dict, env: Any, digest: dict) -> str:
     clean_genome = {k: v for k, v in genome.items() if not k.startswith("_")}
     genome_str = json.dumps(clean_genome, indent=2) if clean_genome else "(empty — using defaults)"
     digest_str = json.dumps(digest, indent=2)
+
+    history = state.get("genome_history", [])
+    history_str = ""
+    if history:
+        last_5 = history[-5:]
+        history_lines = []
+        for h in last_5:
+            cfg = {k: v for k, v in h.get("config", {}).items() if not k.startswith("_")}
+            history_lines.append(f"Gen {h.get('generation', '?')} | Fitness {h.get('fitness', 0):.4f} | Config: {json.dumps(cfg)}")
+        history_str = "LAST 5 GENERATIONS HISTORY:\n" + "\n".join(history_lines) + "\n\n"
+
     return (
+        f"{history_str}"
         f"CURRENT GENOME:\n{genome_str}\n\n"
         f"EPISODE DIGEST:\n{digest_str}\n\n"
         "Propose the next genome to maximise fitness."

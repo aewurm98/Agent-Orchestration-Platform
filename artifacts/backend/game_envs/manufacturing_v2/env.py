@@ -172,7 +172,28 @@ class ManufacturingEnvV2:
         metrics = self.world.economy.snapshot(
             self.world.tick, self.world.agents, self.world.machines
         )
-        return metrics.to_dict()
+        res = metrics.to_dict()
+        
+        # Calculate active ratios
+        res["role_active_ratios"] = {}
+        total_ticks = max(1, self.world.tick)
+        for role, ticks in self.world.role_active_ticks.items():
+            count = sum(1 for a in self.world.agents.values() if a.role.value == role)
+            if count > 0:
+                res["role_active_ratios"][role] = round(ticks / (total_ticks * count), 2)
+            else:
+                res["role_active_ratios"][role] = 0.0
+
+        # Calculate average queue lengths
+        res["machine_diagnostics"] = {}
+        for mid, diag in self.world.machine_diagnostics.items():
+            res["machine_diagnostics"][mid] = {
+                "avg_input_queue": round(diag["input_queue_sum"] / total_ticks, 2),
+                "avg_output_queue": round(diag["output_queue_sum"] / total_ticks, 2),
+                "failure_count": diag["failure_count"],
+            }
+            
+        return res
 
     def get_state(self) -> dict:
         return self.world.to_json()

@@ -93,6 +93,26 @@ def evaluate_genome_minibatch(
     total_orders = metrics["avg_orders_fulfilled"] + metrics["avg_orders_missed"]
     metrics["miss_rate"] = round(metrics["avg_orders_missed"] / max(total_orders, 1), 3)
 
+    # Aggregate role_active_ratios
+    metrics["role_active_ratios"] = {}
+    if all("role_active_ratios" in r for r in metric_rows):
+        roles = metric_rows[0]["role_active_ratios"].keys()
+        for role in roles:
+            metrics["role_active_ratios"][role] = round(
+                sum(r["role_active_ratios"].get(role, 0.0) for r in metric_rows) / n, 2
+            )
+
+    # Aggregate machine_diagnostics
+    metrics["machine_diagnostics"] = {}
+    if all("machine_diagnostics" in r for r in metric_rows):
+        mids = metric_rows[0]["machine_diagnostics"].keys()
+        for mid in mids:
+            metrics["machine_diagnostics"][mid] = {
+                "avg_input_queue": round(sum(r["machine_diagnostics"][mid].get("avg_input_queue", 0.0) for r in metric_rows) / n, 2),
+                "avg_output_queue": round(sum(r["machine_diagnostics"][mid].get("avg_output_queue", 0.0) for r in metric_rows) / n, 2),
+                "failure_count": sum(r["machine_diagnostics"][mid].get("failure_count", 0) for r in metric_rows),
+            }
+
     return {
         "fitness": mean_fitness,
         "fitness_vector": mean_vector,

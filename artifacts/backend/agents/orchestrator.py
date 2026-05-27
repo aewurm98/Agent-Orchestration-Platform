@@ -534,6 +534,16 @@ async def mutate(state: ArenaState) -> ArenaState:
     accepted_fitness = state.get("accepted_fitness", 0.0)
     stagnation_counter = state.get("stagnation_counter", 0)
 
+    # ── Genome History Tracking ───────────────────────────────────────────────
+    if state.get("genome_config"):
+        history = list(state.get("genome_history", []))
+        history.append({
+            "config": copy.deepcopy(state.get("genome_config")),
+            "fitness": current_fitness,
+            "generation": state.get("generation", 0),
+        })
+        state["genome_history"] = history
+
     # (1+1)-EA: child accepted only when it improves upon the IMMEDIATE parent
     if current_fitness < parent_fitness:
         # Child is worse than the immediate parent — reject and RESTORE parent snapshot

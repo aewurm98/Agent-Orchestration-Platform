@@ -82,6 +82,15 @@ class WorldModel:
         self._order_counter = 0
         self._price_fluctuation: float = 0.0
 
+        self.role_active_ticks: dict[str, int] = {
+            "procurement": 0,
+            "operations": 0,
+            "engineering": 0,
+            "sales": 0,
+            "management": 0,
+        }
+        self.machine_diagnostics: dict[str, dict] = {}
+
         # Poisson inter-arrival: draw first arrival tick at construction
         self._next_order_tick: float = float(self.rng.expovariate(1.0 / max(order_arrival_rate, 1)))
 
@@ -342,6 +351,27 @@ class WorldModel:
 
         # ── 10. Price fluctuation ──────────────────────────────────────────────
         self._price_fluctuation = math.sin(self.tick / 30.0) * 10.0
+
+        # Telemetry updates
+        for agent in self.agents.values():
+            if agent.state in (AgentState.WORKING, AgentState.MOVING, AgentState.COMMUNICATING):
+                self.role_active_ticks[agent.role.value] += 1
+
+        for machine in self.machines.values():
+            if machine.id not in self.machine_diagnostics:
+                self.machine_diagnostics[machine.id] = {
+                    "input_queue_sum": 0,
+                    "output_queue_sum": 0,
+                    "failure_count": 0,
+                }
+            self.machine_diagnostics[machine.id]["input_queue_sum"] += len(machine.input_queue)
+            self.machine_diagnostics[machine.id]["output_queue_sum"] += len(machine.output_queue)
+
+        for alert in alerts:
+            if alert.get("event") == "machine_failure":
+                mid = alert.get("machine_id")
+                if mid in self.machine_diagnostics:
+                    self.machine_diagnostics[mid]["failure_count"] += 1
 
         self._pending_alerts = alerts
         self._action_results = action_results
