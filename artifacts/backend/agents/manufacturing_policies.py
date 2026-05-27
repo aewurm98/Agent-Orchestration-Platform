@@ -195,19 +195,39 @@ class ScriptedGreedyPolicy(BasePolicy):
                 if is_adjacent(agent.row, agent.col, target.row, target.col):
                     return {"type": "load_machine", "params": {"machine_id": target.id}}
                 return self._step_toward(agent, target.row, target.col, world)
-            return {"type": "wait", "params": {}}
+            # Deadlock Resolution: drop the intermediate item on the floor if there is no target machine needing it.
+            return {"type": "drop", "params": {}}
 
-        # Empty-handed → pull output from the nearest machine with goods ready.
-        output_ready = [m for m in world.machines.values() if m.state == MachineState.OUTPUT_READY and m.output_queue]
+        # Empty-handed → pull output from the nearest machine with goods ready (excluding PACKAGING which sales handles).
+        output_ready = [
+            m for m in world.machines.values()
+            if m.state == MachineState.OUTPUT_READY and m.output_queue and m.machine_type != MachineType.PACKAGING
+        ]
         if output_ready:
             nearest = min(output_ready, key=lambda m: abs(m.row - agent.row) + abs(m.col - agent.col))
             if is_adjacent(agent.row, agent.col, nearest.row, nearest.col):
                 return {"type": "unload_machine", "params": {"machine_id": nearest.id}}
             return self._step_toward(agent, nearest.row, nearest.col, world)
 
-        # Pick up any loose item on the floor (e.g. a dropped intermediate).
-        floor_items = [i for i in world.items.values()
-                       if i.carrier_id is None and i.row is not None and i.item_type != ItemType.REJECT]
+        # Pick up any loose item on the floor (e.g. a dropped intermediate) that a machine actually has room/need for right now.
+        floor_items = []
+        for i in world.items.values():
+            if i.carrier_id is None and i.row is not None and i.item_type != ItemType.REJECT:
+                # Check if there is any active machine that has room for this item in its input queue
+                has_need = False
+                for m in world.machines.values():
+                    if m.state in (MachineState.BROKEN, MachineState.OFFLINE):
+                        continue
+                    recipe = RECIPES.get(m.machine_type, {})
+                    req_qty = next((q for t, q in recipe.get("inputs", []) if t == i.item_type), 0)
+                    if req_qty > 0:
+                        current_count = sum(1 for item in m.input_queue if item.item_type == i.item_type)
+                        if current_count < req_qty * 2:
+                            has_need = True
+                            break
+                if has_need:
+                    floor_items.append(i)
+
         if floor_items:
             nearest = min(floor_items, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
             if (agent.row, agent.col) == (nearest.row, nearest.col):
@@ -239,14 +259,14 @@ class ScriptedGreedyPolicy(BasePolicy):
             dock_pos = self._nearest_cell_of_type(agent, world, CellType.SHIPPING_DOCK) or world._find_shipping_dock()
             return self._step_toward(agent, dock_pos[0], dock_pos[1], world)
 
-        # Pick up finished goods: from the floor, or unload them from Packaging.
-        finished = [
+        # Pick up finished goods or reject scrap items from the shipping dock floor.
+        sellables = [
             i for i in world.items.values()
             if i.carrier_id is None and i.row is not None
-            and i.item_type == ItemType.FINISHED_PRODUCT
+            and i.item_type in (ItemType.FINISHED_PRODUCT, ItemType.REJECT)
         ]
-        if finished:
-            nearest = min(finished, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
+        if sellables:
+            nearest = min(sellables, key=lambda i: abs(i.row - agent.row) + abs(i.col - agent.col))
             if (agent.row, agent.col) == (nearest.row, nearest.col):
                 return {"type": "pickup", "params": {"item_id": nearest.id}}
             return self._step_toward(agent, nearest.row, nearest.col, world)
@@ -378,10 +398,10 @@ class ScriptedGreedyPolicy(BasePolicy):
             if world.grid[nr][nc] not in WALKABLE:
                 continue
             dist = abs(nr - tr) + abs(nc - tc)
-            # Sort key: prefer distance-reducing, then unoccupied cells.
-            key = (dist, 1 if (nr, nc) in occupied else 0)
-            if best_key is None or key < best_key:
-                best_key = key
+            # Sort cost: heavy penalty (10 steps) for occupied cells to encourage detours
+            cost = dist + (10 if (nr, nc) in occupied else 0)
+            if best_key is None or cost < best_key:
+                best_key = cost
                 best_dir = dname
         if best_dir is None:
             return {"type": "wait", "params": {}}
