@@ -101,7 +101,7 @@ export default function Arena() {
     emitScenarioSelect(val);
     if (val === "Manufacturing") {
       setBoundaryMode("INTER");
-      setInterTicks(1000);
+      setInterTicks(500);
     } else {
       setBoundaryMode("INTRA");
       setInterTicks(500);

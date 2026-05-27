@@ -143,6 +143,7 @@ class RecipeEngine:
                             "machine_id": machine.id,
                             "message": f"QC Station {machine.id} rejected subassembly to scrap",
                         })
+                        machine.state = MachineState.OUTPUT_READY
                     else:
                         alerts.append({
                             "type": "alert",
@@ -150,6 +151,7 @@ class RecipeEngine:
                             "machine_id": machine.id,
                             "message": f"{machine.machine_type.value.title()} {machine.id} material reject (zero output)",
                         })
+                        machine.state = MachineState.IDLE
                 else:
                     for out_type, qty in recipe.get("outputs", []):
                         for _ in range(qty):
@@ -159,8 +161,8 @@ class RecipeEngine:
                             )
                             machine.output_queue.append(new_item)
                             produced.append(new_item)
+                    machine.state = MachineState.OUTPUT_READY
                 machine.total_produced += 1
-                machine.state = MachineState.OUTPUT_READY
 
         if machine.state == MachineState.IDLE and self.can_start(machine):
             self.start_processing(machine)
