@@ -174,7 +174,7 @@ class EconomicModel:
     def record_order_fulfilled(self) -> None:
         self._orders_fulfilled += 1
 
-    def record_order_missed(self, penalty: float = 50.0) -> None:
+    def record_order_missed(self, penalty: float = 10.0) -> None:
         self._orders_missed += 1
         self.budget -= penalty
         self.pl.penalties += penalty

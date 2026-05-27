@@ -88,7 +88,7 @@ ITEM_PURCHASE_COST: dict[ItemType, float] = {
 }
 
 ITEM_SALE_PRICE: dict[ItemType, float] = {
-    ItemType.FINISHED_PRODUCT: 200.0,
+    ItemType.FINISHED_PRODUCT: 800.0,
     ItemType.REJECT: 5.0,
 }
 
@@ -185,7 +185,7 @@ AGENT_WAGE: dict[AgentRole, float] = {
 
 AGENT_CARRY_CAPACITY: dict[AgentRole, int] = {
     AgentRole.PROCUREMENT: 2,
-    AgentRole.OPERATIONS: 1,
+    AgentRole.OPERATIONS: 3,
     AgentRole.ENGINEERING: 0,
     AgentRole.SALES: 2,
     AgentRole.MANAGEMENT: 0,
