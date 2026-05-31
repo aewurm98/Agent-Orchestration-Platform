@@ -12,8 +12,6 @@ import logging
 import os
 from typing import Any
 
-from openai import AsyncOpenAI
-
 try:
     from anthropic import AsyncAnthropic
     _ANTHROPIC_AVAILABLE = True
@@ -21,9 +19,16 @@ except ImportError:
     AsyncAnthropic = None  # type: ignore[assignment]
     _ANTHROPIC_AVAILABLE = False
 
+try:
+    from openai import AsyncOpenAI
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    AsyncOpenAI = None  # type: ignore[assignment]
+    _OPENAI_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 
-_openai_client: AsyncOpenAI | None = None
+_openai_client: "AsyncOpenAI | None" = None
 _anthropic_client: "AsyncAnthropic | None" = None
 
 # Default Anthropic model — cheap and fast.
@@ -37,28 +42,32 @@ def _resolve_provider() -> str:
 
     Precedence:
       1. META_OPTIMIZER_PROVIDER env var ("openai" | "anthropic")
-      2. OPENAI_API_KEY present -> openai
-      3. ANTHROPIC_API_KEY present + anthropic SDK importable -> anthropic
+      2. ANTHROPIC_API_KEY present + anthropic SDK importable -> anthropic
+      3. OPENAI_API_KEY present + openai SDK importable -> openai
       4. raise RuntimeError (caller catches; loop falls back to MATH)
     """
     explicit = (os.environ.get("META_OPTIMIZER_PROVIDER") or "").strip().lower()
     if explicit in {"openai", "anthropic"}:
         return explicit
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
     if os.environ.get("ANTHROPIC_API_KEY") and _ANTHROPIC_AVAILABLE:
         return "anthropic"
+    if os.environ.get("OPENAI_API_KEY") and _OPENAI_AVAILABLE:
+        return "openai"
     # Last resort: Replit OpenAI integration creds, if present
-    if os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL") and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"):
+    if _OPENAI_AVAILABLE and os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL") and os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY"):
         return "openai"
     raise RuntimeError(
-        "No LLM credentials found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, "
-        "or configure the Replit OpenAI AI Integration."
+        "No LLM credentials found. Set ANTHROPIC_API_KEY (preferred), "
+        "OPENAI_API_KEY, or configure the Replit OpenAI AI Integration."
     )
 
 
-def _get_openai_client() -> AsyncOpenAI:
+def _get_openai_client() -> "AsyncOpenAI":
     global _openai_client
+    if not _OPENAI_AVAILABLE or AsyncOpenAI is None:
+        raise RuntimeError(
+            "openai SDK not installed. Set ANTHROPIC_API_KEY to use Anthropic instead."
+        )
     if _openai_client is None:
         openai_key = os.environ.get("OPENAI_API_KEY")
         integration_base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
@@ -90,8 +99,9 @@ def _get_anthropic_client() -> "AsyncAnthropic":
 
 
 # Back-compat shim — some external callers may still import _get_client.
-def _get_client() -> AsyncOpenAI:
-    return _get_openai_client()
+# Now defaults to the Anthropic client (preferred provider).
+def _get_client() -> "AsyncAnthropic":
+    return _get_anthropic_client()
 
 
 # ---------------------------------------------------------------------------

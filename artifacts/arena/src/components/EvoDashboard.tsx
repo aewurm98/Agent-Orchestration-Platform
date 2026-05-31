@@ -18,28 +18,105 @@ const ROLE_LABEL: Record<string, string> = {
   management:  "Mgmt",
 };
 
-function GenomePanel({ genome, improved }: { genome: GenomeSnapshot; improved: boolean }) {
+const MAINT_COLOR: Record<string, string> = {
+  low:    "#b91c1c",
+  medium: "#b45309",
+  high:   "#15803d",
+};
+
+function GenomeHeader({ improved }: { improved: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Current Genome</span>
+      <Badge
+        variant="outline"
+        className="text-[9px]"
+        style={{
+          borderColor: improved ? "#15803d" : "#b45309",
+          color:       improved ? "#15803d" : "#b45309",
+        }}
+      >
+        {improved ? "▲ Improved" : "▼ Reverted"}
+      </Badge>
+    </div>
+  );
+}
+
+// Manufacturing v3 (flow graph): machine capacities, conveyor bandwidths,
+// maintenance policy, and order intake rate.
+function GenomePanelV3({ genome, improved }: { genome: GenomeSnapshot; improved: boolean }) {
+  const maint = genome.maintenance_policy ?? "medium";
   return (
     <div className="bg-[#faf6ed] rounded-lg border border-[#ebe5d6] shadow-sm p-3 flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Current Genome</span>
-        <Badge
-          variant="outline"
-          className="text-[9px]"
-          style={{
-            borderColor: improved ? "#15803d" : "#b45309",
-            color:       improved ? "#15803d" : "#b45309",
-          }}
-        >
-          {improved ? "▲ Improved" : "▼ Reverted"}
-        </Badge>
+      <GenomeHeader improved={improved} />
+
+      {/* Machine capacities */}
+      <div>
+        <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5">Machine Capacities</p>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(genome.machine_capacities ?? {}).map(([mid, cap]) => (
+            <div
+              key={mid}
+              className="text-[9px] font-mono px-2 py-0.5 rounded border border-[#14120e]/30 bg-white text-[#14120e]"
+            >
+              {mid.replace(/_/g, " ")} · {cap}
+            </div>
+          ))}
+        </div>
       </div>
+
+      {/* Edge bandwidths */}
+      <div>
+        <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5">Conveyor Bandwidths</p>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(genome.edge_bandwidths ?? {}).map(([eid, bw]) => (
+            <div
+              key={eid}
+              className="text-[9px] font-mono px-2 py-0.5 rounded border border-[#b45309]/40 bg-white text-[#b45309]"
+            >
+              {eid.replace(/_/g, " ")} · {bw}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Maintenance + intake */}
+      <div className="flex items-end gap-4">
+        <div className="flex-1">
+          <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5">Maintenance</p>
+          <span
+            className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded border"
+            style={{
+              color: MAINT_COLOR[maint] ?? "#14120e",
+              borderColor: (MAINT_COLOR[maint] ?? "#14120e") + "55",
+              backgroundColor: (MAINT_COLOR[maint] ?? "#14120e") + "11",
+            }}
+          >
+            {maint}
+          </span>
+        </div>
+        <div className="text-right">
+          <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Order Intake</p>
+          <span className="text-sm font-mono text-[#b45309]">
+            {genome.order_intake_rate} / ep
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Legacy v2 (grid factory): machine speeds, agent counts, order arrival rate.
+function GenomePanelV2({ genome, improved }: { genome: GenomeSnapshot; improved: boolean }) {
+  return (
+    <div className="bg-[#faf6ed] rounded-lg border border-[#ebe5d6] shadow-sm p-3 flex flex-col gap-3">
+      <GenomeHeader improved={improved} />
 
       {/* Machine speeds */}
       <div>
         <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5">Machine Speeds</p>
         <div className="flex flex-wrap gap-1.5">
-          {Object.entries(genome.machine_speeds).map(([mid, spd]) => (
+          {Object.entries(genome.machine_speeds ?? {}).map(([mid, spd]) => (
             <div
               key={mid}
               className="text-[9px] font-mono px-2 py-0.5 rounded border"
@@ -60,7 +137,7 @@ function GenomePanel({ genome, improved }: { genome: GenomeSnapshot; improved: b
         <div className="flex-1">
           <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5">Agent Counts</p>
           <div className="flex gap-2">
-            {Object.entries(genome.agent_counts).map(([role, count]) => (
+            {Object.entries(genome.agent_counts ?? {}).map(([role, count]) => (
               <div key={role} className="flex flex-col items-center gap-0.5">
                 <span className="text-[10px] font-mono font-bold text-[#14120e]">{count}</span>
                 <span className="text-[8px] text-muted-foreground">{ROLE_LABEL[role] ?? role}</span>
@@ -77,6 +154,13 @@ function GenomePanel({ genome, improved }: { genome: GenomeSnapshot; improved: b
       </div>
     </div>
   );
+}
+
+function GenomePanel({ genome, improved }: { genome: GenomeSnapshot; improved: boolean }) {
+  // v3 flow-graph genomes carry machine_capacities; v2 grid genomes carry machine_speeds.
+  return genome.machine_capacities
+    ? <GenomePanelV3 genome={genome} improved={improved} />
+    : <GenomePanelV2 genome={genome} improved={improved} />;
 }
 
 const MUTATION_COLORS: Record<string, string> = {
@@ -112,11 +196,29 @@ export default function EvoDashboard() {
     );
   }
 
-  const chartData = evolutionData.map(d => ({
+  // Plot only the most recent window so the Y axis can zoom into the live range.
+  // Across a whole run fitness spans a huge band (e.g. -2k → 60k), which dwarfs the
+  // small per-generation gains the user cares about once the search plateaus.
+  const CHART_WINDOW = 25;
+  const chartData = evolutionData.slice(-CHART_WINDOW).map(d => ({
     generation: d.generation,
     parentFitness: d.parent_fitness,
     bestFitness: d.best_fitness,
   }));
+
+  // Auto-zoom the Y axis to the visible window (instead of anchoring at 0) and pad
+  // the band slightly. A +$300 step on a 40k baseline then occupies a real fraction
+  // of the chart height instead of rendering as a flat line.
+  const fitVals = chartData
+    .flatMap(d => [d.parentFitness, d.bestFitness])
+    .filter((v): v is number => Number.isFinite(v));
+  const dataMin = fitVals.length ? Math.min(...fitVals) : 0;
+  const dataMax = fitVals.length ? Math.max(...fitVals) : 1;
+  const yPad = Math.max((dataMax - dataMin) * 0.18, Math.abs(dataMax) * 0.03, 1);
+  const yMin = Math.floor(dataMin - yPad);
+  const yMax = Math.ceil(dataMax + yPad);
+  const fmtK = (v: number) =>
+    Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`;
 
   const sortedRecords = [...evolutionData].sort((a, b) => b.generation - a.generation);
   const latestRecord = evolutionData[evolutionData.length - 1];
@@ -186,6 +288,12 @@ export default function EvoDashboard() {
       )}
 
       {/* Fitness area chart with gradient fill */}
+      <div className="flex items-center justify-between px-1 shrink-0">
+        <span className="text-[9px] uppercase tracking-widest text-[#6b6359] font-semibold">Fitness Curve</span>
+        {evolutionData.length > CHART_WINDOW && (
+          <span className="text-[9px] font-mono text-[#a89e8e]">last {CHART_WINDOW} gens · zoomed</span>
+        )}
+      </div>
       <div className="h-[200px] w-full border border-[#ebe5d6] rounded-xl bg-[#faf6ed] shadow-sm p-3 shrink-0">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData} margin={{ top: 6, right: 12, bottom: 16, left: 4 }}>
@@ -203,7 +311,15 @@ export default function EvoDashboard() {
               tickLine={false}
               label={{ value: "Generation", position: "insideBottom", offset: -8, fill: "#6b6359", fontSize: 10 }}
             />
-            <YAxis stroke="#6b6359" fontSize={10} tickLine={false} width={36} />
+            <YAxis
+              stroke="#6b6359"
+              fontSize={10}
+              tickLine={false}
+              width={44}
+              domain={[yMin, yMax]}
+              allowDecimals={false}
+              tickFormatter={fmtK}
+            />
             <Tooltip
               contentStyle={{ backgroundColor: "#ffffff", borderColor: "#ebe5d6", fontSize: "11px", borderRadius: "8px" }}
               itemStyle={{ color: "#14120e" }}
@@ -223,6 +339,7 @@ export default function EvoDashboard() {
               stroke="#4F7CFF"
               strokeWidth={2}
               fill="url(#fitnessGradient)"
+              baseValue={yMin}
               dot={false}
               name="Best"
             />

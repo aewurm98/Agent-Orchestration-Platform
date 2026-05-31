@@ -46,6 +46,46 @@ export type GameState = {
   tick: number;
   // Supply Chain v2 — rich real-time payload (terrain grid, nodes, trucks, GLS).
   sc?: SupplyChainV2State;
+  // Manufacturing v3 — Topological Flow Graph snapshot (env.to_json()).
+  simulation_length?: number;
+  done?: boolean;
+  nodes?: MfgV3Node[];
+  edges?: MfgV3Edge[];
+  economics?: MfgV3Economics;
+  orders?: MfgV3Orders;
+};
+
+export type MfgV3Node = {
+  id: string;
+  label: string;
+  state: "IDLE" | "PROCESSING" | "DOWN";
+  capacity: number;
+  input_queue: number;
+  output_queue: number;
+  utilization: number;
+};
+
+export type MfgV3Edge = {
+  id: string;
+  source: string;
+  target: string;
+  bandwidth: number;
+  flow: number;
+  item: string;
+};
+
+export type MfgV3Economics = {
+  revenue: number;
+  opex: number;
+  material_cost: number;
+  penalties: number;
+  fitness: number;
+};
+
+export type MfgV3Orders = {
+  received: number;
+  fulfilled: number;
+  missed: number;
 };
 
 export type SCNode = {
@@ -247,9 +287,15 @@ export type HitlRequest = {
 };
 
 export type GenomeSnapshot = {
-  agent_counts: Record<string, number>;
-  machine_speeds: Record<string, string>;
-  order_arrival_rate: number;
+  // Legacy v2 (grid factory) genome
+  agent_counts?: Record<string, number>;
+  machine_speeds?: Record<string, string>;
+  order_arrival_rate?: number;
+  // Manufacturing v3 (flow graph) genome
+  machine_capacities?: Record<string, number>;
+  edge_bandwidths?: Record<string, number>;
+  maintenance_policy?: string;
+  order_intake_rate?: number;
 };
 
 export type FitnessUpdate = {
@@ -285,12 +331,16 @@ type SocketContextType = {
   traces: AgentThought[];
   hitlRequest: HitlRequest | null;
   isRunning: boolean;
+  isPaused: boolean;
   currentGeneration: number;
   emitHitlResponse: (action: "approve" | "override" | "stop", constraint?: string) => void;
   emitScenarioSelect: (scenario: string) => void;
   emitStartEvolution: () => void;
+  emitPause: () => void;
+  emitResume: () => void;
   emitMfgAction: (agentId: string, actionType: string, params?: Record<string, unknown>) => void;
   emitSupplyChainKnobs: (knobs: { supply_rate?: number | null; retail_demand_base?: number | null }) => void;
+  emitSetSpeed: (multiplier: number) => void;
   setIsRunning: (running: boolean) => void;
   clearHitlRequest: () => void;
   clearSessionState: () => void;
@@ -311,6 +361,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [traces, setTraces] = useState<AgentThought[]>([]);
   const [hitlRequest, setHitlRequest] = useState<HitlRequest | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [currentGeneration, setCurrentGeneration] = useState(0);
 
   useEffect(() => {
@@ -333,9 +384,15 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
 
     newSocket.on("tick_update", (data: unknown) => {
+      // Legacy v2 grid env keeps using mfgState; everything else (flow-graph
+      // manufacturing, supply chain) drives the canvas via gameState — without
+      // this branch, mid-episode ticks were silently dropped on the floor and
+      // the viewport only re-rendered at end-of-episode.
       const d = data as Record<string, unknown>;
       if (d.grid) {
         setMfgState(d as unknown as MfgGameState);
+      } else {
+        setGameState(data as GameState);
       }
     });
 
@@ -402,6 +459,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     setCurrentGeneration(0);
     setGameState(null);
     setIsRunning(false);
+    setIsPaused(false);
   }, []);
 
   const emitScenarioSelect = useCallback(
@@ -416,6 +474,21 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     if (socket) {
       socket.emit("start_evolution", {});
       setIsRunning(true);
+      setIsPaused(false);
+    }
+  }, [socket]);
+
+  const emitPause = useCallback(() => {
+    if (socket) {
+      socket.emit("pause", {});
+      setIsPaused(true);
+    }
+  }, [socket]);
+
+  const emitResume = useCallback(() => {
+    if (socket) {
+      socket.emit("resume", {});
+      setIsPaused(false);
     }
   }, [socket]);
 
@@ -435,6 +508,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     [socket]
   );
 
+  const emitSetSpeed = useCallback(
+    (multiplier: number) => {
+      if (socket) socket.emit("set_speed", { multiplier });
+    },
+    [socket]
+  );
+
   const clearHitlRequest = useCallback(() => setHitlRequest(null), []);
 
   return (
@@ -450,12 +530,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         traces,
         hitlRequest,
         isRunning,
+        isPaused,
         currentGeneration,
         emitHitlResponse,
         emitScenarioSelect,
         emitStartEvolution,
+        emitPause,
+        emitResume,
         emitMfgAction,
         emitSupplyChainKnobs,
+        emitSetSpeed,
         setIsRunning,
         clearHitlRequest,
         clearSessionState,

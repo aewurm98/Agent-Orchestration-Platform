@@ -21,35 +21,46 @@ import os
 import time
 from typing import Any, Optional, TYPE_CHECKING
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 
 if TYPE_CHECKING:
     from game_envs.manufacturing_v2.env import ManufacturingEnvV2
 
 log = logging.getLogger(__name__)
 
-_openai_client: AsyncOpenAI | None = None
+# Cheap, fast Anthropic model — analog of the gpt-4o-mini we used previously.
+LLM_MODEL = os.environ.get("MANUFACTURING_LLM_MODEL", "claude-haiku-4-5")
+
+_anthropic_client: AsyncAnthropic | None = None
 
 
-def _get_openai_client() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        openai_key = os.environ.get("OPENAI_API_KEY")
-        integration_base = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
-        integration_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-        if openai_key:
-            _openai_client = AsyncOpenAI(api_key=openai_key)
-        elif integration_base and integration_key:
-            _openai_client = AsyncOpenAI(
-                base_url=integration_base,
-                api_key=integration_key,
-            )
-        else:
-            raise RuntimeError(
-                "No OpenAI credentials found. "
-                "Set OPENAI_API_KEY or configure the Replit OpenAI AI Integration."
-            )
-    return _openai_client
+def _get_anthropic_client() -> AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set in environment.")
+        _anthropic_client = AsyncAnthropic(api_key=api_key)
+    return _anthropic_client
+
+
+def _strip_fences(raw: str) -> str:
+    """Remove markdown code fences the model may wrap JSON in."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        raw = "\n".join(lines[1:]).rstrip("`").strip()
+    return raw
+
+
+def _anthropic_text(response) -> str:
+    """Concatenate all text blocks from an Anthropic messages response."""
+    parts = []
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
 
 _env = None
 _env_v2: Optional["ManufacturingEnvV2"] = None
@@ -68,18 +79,18 @@ _edge_scores: dict[str, float] = {}
 
 
 def set_active_env(env) -> None:
-    global _env, _openai_client
+    global _env, _anthropic_client
     _env = env
-    _openai_client = None
+    _anthropic_client = None
     _message_board.clear()
     _planner_cache.clear()
     _worker_state_cache.clear()
 
 
 def set_active_env_v2(env: "ManufacturingEnvV2") -> None:
-    global _env_v2, _openai_client
+    global _env_v2, _anthropic_client
     _env_v2 = env
-    _openai_client = None
+    _anthropic_client = None
     _message_board.clear()
     _planner_cache.clear()
     _worker_state_cache.clear()
@@ -270,17 +281,16 @@ async def _call_llm_v2(
     user_message = f"Current observation (tick {obs_summary['tick']}):\n{json.dumps(obs_summary, indent=2)}"
 
     try:
-        response = await _get_openai_client().chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
+        response = await _get_anthropic_client().messages.create(
+            model=LLM_MODEL,
+            system=system_prompt,
             messages=[
-                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             max_tokens=384,
             temperature=0.5,
         )
-        raw = response.choices[0].message.content or "{}"
+        raw = _strip_fences(_anthropic_text(response)) or "{}"
         parsed = json.loads(raw)
         return parsed
     except Exception as exc:
@@ -566,17 +576,16 @@ async def _call_llm(role_label: str, incentive: str, skills: list[dict], context
     system_prompt = f"{incentive}\n\nAvailable skills:\n{skill_list}\n\n{_LEGACY_RESPONSE_SCHEMA}"
     user_message = f"Current context (this tick):\n{json.dumps(context, indent=2)}"
     try:
-        response = await _get_openai_client().chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
+        response = await _get_anthropic_client().messages.create(
+            model=LLM_MODEL,
+            system=system_prompt,
             messages=[
-                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             max_tokens=512,
             temperature=0.7,
         )
-        raw = response.choices[0].message.content or "{}"
+        raw = _strip_fences(_anthropic_text(response)) or "{}"
         return json.loads(raw)
     except Exception as exc:
         log.error("LLM call failed for %s: %s", role_label, exc)

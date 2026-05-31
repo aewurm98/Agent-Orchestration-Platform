@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -12,8 +12,6 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { useSocket } from "@/hooks/useSocket";
 import { DagNode } from "@/context/SocketContext";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 
 type NodeStatus = DagNode["status"];
 
@@ -25,30 +23,33 @@ const NODE_STATUS_COLORS: Record<NodeStatus, { border: string; bg: string; text:
   idle:    { border: "#D8DFEA", bg: "#FFFFFF", text: "#5E667A", shadow: "none" },
 };
 
-function getBorderColor(status: NodeStatus): string {
-  return NODE_STATUS_COLORS[status]?.border ?? "#D8DFEA";
-}
-
 function CustomNode({ data }: NodeProps<DagNode>) {
-  const size = 60 + (data.ctx_util || 0) * 30;
-  const isActive = data.status === "active";
-  const colors = NODE_STATUS_COLORS[data.status] ?? NODE_STATUS_COLORS.idle;
+  const status = data?.status ?? "idle";
+  const isActive = status === "active";
+  const colors = NODE_STATUS_COLORS[status] ?? NODE_STATUS_COLORS.idle;
+  const size = 60;
 
   return (
-    <div
-      className={`rounded-full flex items-center justify-center border-[2.5px] text-xs font-mono text-center overflow-hidden transition-all duration-300 ${isActive ? "node-active-pulse" : ""}`}
-      style={{
-        width: `${size}px`,
-        height: `${size}px`,
-        borderColor: colors.border,
-        backgroundColor: colors.bg,
-        color: colors.text,
-        boxShadow: isActive ? `0 0 14px 4px ${colors.shadow}` : "none",
-      }}
-    >
-      <Handle type="target" position={Position.Top} className="opacity-0" />
-      <span className="max-w-full truncate px-2">{data.label}</span>
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
+    <div className="flex flex-col items-center gap-1.5">
+      <div
+        className={`relative rounded-full border-[2.5px] transition-all duration-300 ${isActive ? "node-active-pulse" : ""}`}
+        style={{
+          width: `${size}px`,
+          height: `${size}px`,
+          borderColor: colors.border,
+          backgroundColor: colors.bg,
+          boxShadow: isActive ? `0 0 14px 4px ${colors.shadow}` : "none",
+        }}
+      >
+        <Handle type="target" position={Position.Top} className="opacity-0" />
+        <Handle type="source" position={Position.Bottom} className="opacity-0" />
+      </div>
+      <div
+        className="text-[10px] font-medium text-center leading-tight px-2 py-0.5 rounded-md bg-white/95 border border-[#ebe5d6] max-w-[130px] break-words shadow-sm"
+        style={{ color: colors.text }}
+      >
+        {data?.label ?? "—"}
+      </div>
     </div>
   );
 }
@@ -57,7 +58,6 @@ const nodeTypes = { custom: CustomNode };
 
 export default function DAGVisualizer() {
   const { dagData } = useSocket();
-  const [selectedNode, setSelectedNode] = useState<DagNode | null>(null);
 
   const { nodes, edges } = useMemo(() => {
     if (!dagData) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -105,8 +105,10 @@ export default function DAGVisualizer() {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
         fitView
-        onNodeClick={(_, node) => setSelectedNode(node.data as DagNode)}
       >
         <Background color="rgba(20, 18, 14, 0.10)" gap={20} />
         <Controls className="fill-[#14120e] bg-[#ffffff] border-[#ebe5d6]" />
@@ -115,103 +117,9 @@ export default function DAGVisualizer() {
       {/* Empty state — shown before first run */}
       {isEmpty && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
-          <div className="w-12 h-12 rounded-2xl pixel-gradient opacity-60" />
+          <div className="w-12 h-12 pixel-gradient blob opacity-60" />
           <p className="text-[12px] text-[#6b6359] font-mono">Start a run to see the agent graph</p>
         </div>
-      )}
-
-      {/* Node inspector panel */}
-      {selectedNode && (
-        <Card className="absolute top-4 right-4 w-72 bg-[#ffffff]/96 backdrop-blur border-[#ebe5d6] p-4 flex flex-col gap-3 shadow-xl overflow-y-auto max-h-[calc(100%-2rem)] animate-in slide-in-from-right-2 duration-200">
-          <div className="flex justify-between items-center border-b border-[#ebe5d6] pb-2">
-            <div className="flex items-center gap-2">
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: NODE_STATUS_COLORS[selectedNode.status]?.border ?? "#D8DFEA" }}
-              />
-              <h3 className="font-mono text-sm text-[#14120e]">{selectedNode.label}</h3>
-            </div>
-            <button
-              onClick={() => setSelectedNode(null)}
-              className="text-muted-foreground hover:text-foreground text-xs w-5 h-5 flex items-center justify-center rounded hover:bg-[#efe9d9] transition-colors"
-              data-testid="btn-close-node-details"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Status + Context Utility */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Status</span>
-              <Badge
-                variant="outline"
-                className="w-fit text-xs"
-                style={{
-                  borderColor: NODE_STATUS_COLORS[selectedNode.status]?.border,
-                  color: NODE_STATUS_COLORS[selectedNode.status]?.text,
-                  backgroundColor: NODE_STATUS_COLORS[selectedNode.status]?.bg,
-                }}
-              >
-                {selectedNode.status}
-              </Badge>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Ctx Util</span>
-              <span className="text-xs font-mono text-[#14120e]">
-                {(selectedNode.ctx_util * 100).toFixed(1)}%
-              </span>
-            </div>
-          </div>
-
-          {/* Tools */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Tools</span>
-            <div className="flex flex-wrap gap-1">
-              {selectedNode.tools.length > 0 ? (
-                selectedNode.tools.map((tool) => (
-                  <Badge
-                    key={tool}
-                    variant="outline"
-                    className="text-[9px] font-mono border-[#ebe5d6] text-[#6b6359] px-1.5 py-0.5"
-                  >
-                    {tool}
-                  </Badge>
-                ))
-              ) : (
-                <span className="text-[10px] text-muted-foreground italic">none assigned</span>
-              )}
-            </div>
-          </div>
-
-          {/* Last 3 Actions */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Recent Actions</span>
-            <div className="flex flex-col gap-1">
-              {selectedNode.last_actions.length > 0 ? (
-                selectedNode.last_actions.map((action, idx) => (
-                  <div
-                    key={idx}
-                    className="text-[10px] font-mono bg-[#f4f0e7] px-2 py-1 rounded border border-[#ebe5d6] text-[#6b6359] truncate"
-                    title={action}
-                  >
-                    {action}
-                  </div>
-                ))
-              ) : (
-                <span className="text-[10px] text-muted-foreground italic">No actions yet</span>
-              )}
-            </div>
-          </div>
-
-          {/* System Prompt */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">System Prompt</span>
-            <div className="text-[10px] font-mono bg-[#f4f0e7] p-2 rounded border border-[#ebe5d6] text-[#6b6359] leading-relaxed max-h-24 overflow-y-auto">
-              {selectedNode.system_prompt || "—"}
-            </div>
-          </div>
-        </Card>
       )}
     </div>
   );

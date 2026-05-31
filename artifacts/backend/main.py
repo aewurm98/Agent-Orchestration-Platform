@@ -17,6 +17,7 @@ from game_envs.peer_agents import PeerAgentsEnv
 from game_envs.manufacturing import ManufacturingEnvLegacy
 from game_envs.manufacturing_v2 import ManufacturingEnvV2
 from game_envs.manufacturing_v2.scenarios import FIRST_FACTORY_CONFIG
+from game_envs.manufacturing_v3 import ManufacturingV3Env
 from state.db import init_db, save_workflow, get_workflows, save_trace, get_traces, WorkflowIn, TraceIn
 from api.mfg_router import router as mfg_router, set_env as mfg_set_env
 
@@ -45,21 +46,26 @@ app.add_middleware(
 app.include_router(mfg_router)
 
 SCENARIOS: dict[str, type] = {
-    "supply_chain":    SupplyChainEnv,
-    "disaster_relief": DisasterReliefEnv,
-    "peer_agents":     PeerAgentsEnv,
-    "manufacturing":   ManufacturingEnvV2,
+    "supply_chain":     SupplyChainEnv,
+    "disaster_relief":  DisasterReliefEnv,
+    "peer_agents":      PeerAgentsEnv,
+    "manufacturing":    ManufacturingEnvV2,
+    "manufacturing_v3": ManufacturingV3Env,
 }
 
 SCENARIO_LABEL_MAP: dict[str, str] = {
-    "Supply Chain":    "supply_chain",
-    "Disaster Relief": "disaster_relief",
-    "Peer Agents":     "peer_agents",
-    "Manufacturing":   "manufacturing",
-    "supply_chain":    "supply_chain",
-    "disaster_relief": "disaster_relief",
-    "peer_agents":     "peer_agents",
-    "manufacturing":   "manufacturing",
+    "Supply Chain":      "supply_chain",
+    "Disaster Relief":   "disaster_relief",
+    "Peer Agents":       "peer_agents",
+    # The user-facing "Manufacturing" scenario now runs the v3 Topological Flow
+    # Graph (the legacy grid env at key "manufacturing" is retired from the UI).
+    "Manufacturing":     "manufacturing_v3",
+    "Manufacturing V3":  "manufacturing_v3",
+    "supply_chain":      "supply_chain",
+    "disaster_relief":   "disaster_relief",
+    "peer_agents":       "peer_agents",
+    "manufacturing":     "manufacturing_v3",
+    "manufacturing_v3":  "manufacturing_v3",
 }
 
 NODE_METADATA: dict[str, dict] = {
@@ -593,6 +599,139 @@ async def simulation_loop(scenario: str, mode: str, run_id: str) -> None:
             tick_sleep = max(0.05, 0.5 / max(speed_mult, 0.1))
             await asyncio.sleep(tick_sleep)
 
+        return
+
+    # ── Manufacturing v3 loop (Topological Flow Graph + (mu+lambda) EA) ───────
+    if scenario == "manufacturing_v3":
+        from evolution.manufacturing_v3_evolution import run_generation, DEFAULT_SEEDS
+        from game_envs.manufacturing_v3 import ManufacturingV3Env, ManufacturingV3Genome
+
+        # Default to the LLM meta-optimizer (MATH is only the offline/no-key fallback).
+        engine = active_run.get("mutation_strategy", "LLM")
+        ea_state: dict = {
+            "genome": ManufacturingV3Genome.default().to_dict(),
+            "generation": 0,
+            "engine": engine,
+            "seeds": tuple(DEFAULT_SEEDS),
+            "rng_seed": 12345,
+            "history": [],
+        }
+        print(f"[manufacturing_v3] loop start — engine={engine}")
+
+        while active_run.get("running"):
+            if active_run.get("paused"):
+                await asyncio.sleep(0.1)
+                continue
+
+            speed_mult = float(active_run.get("speed_multiplier", 1.0))
+            prev_best = float(ea_state.get("best_fitness", 0.0))
+
+            # 1. Stream a representative episode of the current genome for the UI.
+            live_genome = ManufacturingV3Genome.from_dict(ea_state["genome"])
+            live = ManufacturingV3Env(live_genome, seed=DEFAULT_SEEDS[0])
+            await sio.emit("game_state_update", live.to_json())
+            await sio.emit("tick_update", live.to_json())
+            await sio.emit("metrics_update", live.get_metrics())
+
+            # Stream the episode at a watchable pace: ~20s per 500-tick episode
+            # at 1×, ~10s at 2×. Without this the episode races to completion in
+            # ~2.5s and the UI just sees 0/500 → 500/500.
+            tick_delay = max(0.04, 0.2 / max(speed_mult, 0.1))
+            for _ti in range(live.simulation_length):
+                if not active_run.get("running") or live.done:
+                    break
+                live.step()
+                if _ti % 5 == 0:
+                    snapshot = live.to_json()
+                    await sio.emit("tick_update", snapshot)
+                    await sio.emit("metrics_update", live.get_metrics())
+                    # Live DAG: stream node state + edge flow during the episode
+                    # so the agent graph actually animates, not just at end-of-gen.
+                    await sio.emit("dag_update", {
+                        "nodes": [
+                            {"id": n["id"], "label": n["label"], "status": (
+                                "active" if n["state"] == "PROCESSING"
+                                else "down" if n["state"] == "DOWN" else "idle"
+                            ), "ctx_util": n["utilization"]}
+                            for n in snapshot["nodes"]
+                        ],
+                        "edges": [
+                            {"source": e["source"], "target": e["target"],
+                             "payload_size": e["flow"],
+                             "grpo_score": round(e["bandwidth"] / 50.0, 3)}
+                            for e in snapshot["edges"]
+                        ],
+                    })
+                    await asyncio.sleep(tick_delay)
+
+            if not active_run.get("running"):
+                break
+
+            await sio.emit("game_state_update", live.to_json())
+            await sio.emit("metrics_update", live.get_metrics())
+
+            # 2. Evolve one generation ((mu+lambda) over LLM/MATH offspring).
+            ea_state = await run_generation(ea_state)
+            generation = ea_state["generation"]
+            best_fitness = ea_state["best_fitness"]
+
+            await sio.emit("fitness_update", {
+                "generation": generation,
+                "parent_fitness": round(prev_best, 2),
+                "best_fitness": round(best_fitness, 2),
+                "mutation_type": ea_state.get("engine_used", engine).lower(),
+                "topology_diff": f"flow graph (intake={ea_state['genome']['order_intake_rate']})",
+                "cost_per_task": round(
+                    ea_state.get("parent_metrics", {}).get("total_opex", 0.0)
+                    / max(1, ea_state.get("parent_metrics", {}).get("orders_fulfilled", 1)),
+                    3,
+                ),
+                "latency": 0.0,
+                "genome": ea_state["genome"],
+                "improved": ea_state.get("improved", False),
+            })
+
+            # v3-native DAG payload (nodes + conveyor edges with last-tick flow).
+            await sio.emit("dag_update", {
+                "nodes": [
+                    {"id": n["id"], "label": n["label"], "status": (
+                        "active" if n["state"] == "PROCESSING"
+                        else "down" if n["state"] == "DOWN" else "idle"
+                    ), "ctx_util": n["utilization"]}
+                    for n in live.to_json()["nodes"]
+                ],
+                "edges": [
+                    {"source": e["source"], "target": e["target"],
+                     "payload_size": e["flow"], "grpo_score": round(
+                         e["bandwidth"] / 50.0, 3)}
+                    for e in live.to_json()["edges"]
+                ],
+            })
+
+            reasoning = ea_state.get("reasoning", "")
+            if reasoning:
+                await sio.emit("agent_thought", {
+                    "run_id": run_id,
+                    # The Factory Executive is this scenario's orchestrator — tag it so
+                    # the Traces tab's "Orchestrator" filter and colour pick it up.
+                    "role": "orchestrator",
+                    "agent_role": "Factory Executive",
+                    "content": f"[Gen {generation}] {reasoning}",
+                    "timestamp": time.time(),
+                })
+            for cand in ea_state.get("candidate_log", []):
+                await sio.emit("agent_thought", {
+                    "run_id": run_id,
+                    "role": "orchestrator",
+                    "agent_role": "Factory Executive",
+                    "content": (
+                        f"  candidate fitness=${cand['fitness']:,.0f}: "
+                        f"{cand.get('reasoning', '')}"
+                    ),
+                    "timestamp": time.time(),
+                })
+
+            await asyncio.sleep(0.1)
         return
 
     # ── Supply Chain v2 loop (real-time truck edge-agents + director) ─────────

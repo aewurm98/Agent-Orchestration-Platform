@@ -210,17 +210,89 @@
     background-color: #efe9d9;
     border: 1px solid #e6dfc9;
   }
-  /* Signature AI-orchestration gradient (indigo → violet → magenta → rose → orange) */
+  /* Signature accent — warm, diffused blob blend (cream · golden · coral ·
+     charcoal) matching the workout-blob inspo. Gradients fade out softly and
+     the layers are oversized (200%) so they can drift inside the shape. */
   .pixel-gradient {
-    background: linear-gradient(
-      135deg,
-      #4F46E5 0%,
-      #7C3AED 30%,
-      #D946EF 60%,
-      #F43F5E 85%,
-      #FB923C 100%
-    );
+    background:
+      radial-gradient(farthest-side at 28% 30%, #f5c84b 0%, rgba(245, 200, 75, 0) 96%),
+      radial-gradient(farthest-side at 52% 20%, #ff7a18 0%, rgba(255, 122, 24, 0) 94%),
+      radial-gradient(farthest-side at 74% 40%, #ef3e5b 0%, rgba(239, 62, 91, 0) 94%),
+      radial-gradient(farthest-side at 22% 60%, #d6249f 0%, rgba(214, 36, 159, 0) 94%),
+      radial-gradient(farthest-side at 60% 74%, #7b3ff2 0%, rgba(123, 63, 242, 0) 94%),
+      radial-gradient(farthest-side at 84% 64%, #14c8c8 0%, rgba(20, 200, 200, 0) 94%),
+      radial-gradient(farthest-side at 40% 86%, #2563ff 0%, rgba(37, 99, 255, 0) 94%),
+      radial-gradient(farthest-side at 12% 44%, #36d65a 0%, rgba(54, 214, 90, 0) 94%),
+      #f4e4c4;
+    background-size: 280% 280%;
+    background-repeat: no-repeat;
   }
+
+  /* Organic, morphable shape: the radius slowly squishes AND the gradient
+     drifts within it — the diffused color lives inside the morphing shape. */
+  .blob {
+    border-radius: 42% 58% 70% 30% / 45% 45% 55% 55%;
+    background-size: 280% 280%;
+    animation:
+      blob-morph 8s ease-in-out infinite,
+      gradient-drift 9s ease-in-out infinite,
+      blob-hue 13s linear infinite;
+  }
+
+  /* Stretch lives on the wrapper at a different period than the radius morph,
+     so the squash and the corner-pull drift in and out of phase instead of
+     swinging together. */
+  .blob-stretch {
+    animation: blob-stretch 11s ease-in-out infinite;
+  }
+}
+
+/* Liquid corner-pull: radii swing through a wide 18–82% range with the two axes
+   working against each other. Stops are deliberately unevenly spaced and the
+   poses don't mirror, so the silhouette wanders rather than swinging on a beat.
+   Runs at its own period (see .blob) so it drifts out of phase with the
+   stretch — the combination never visibly repeats. */
+@keyframes blob-morph {
+  0%, 100% { border-radius: 42% 58% 70% 30% / 45% 45% 55% 55%; }
+  13%      { border-radius: 74% 26% 22% 78% / 78% 64% 36% 22%; }
+  29%      { border-radius: 28% 72% 76% 24% / 24% 38% 62% 76%; }
+  41%      { border-radius: 62% 38% 30% 70% / 70% 26% 74% 30%; }
+  58%      { border-radius: 22% 78% 64% 36% / 54% 80% 20% 46%; }
+  67%      { border-radius: 80% 20% 46% 54% / 30% 56% 44% 70%; }
+  82%      { border-radius: 34% 66% 78% 22% / 66% 30% 70% 34%; }
+  91%      { border-radius: 70% 30% 28% 72% / 36% 70% 30% 64%; }
+}
+
+/* Asymmetric squash/stretch on the wrapper. Different stop count and period
+   than blob-morph, and the x/y scales never simply trade off, so it elongates
+   and rebounds like a drop of liquid instead of pulsing on a fixed rhythm. */
+@keyframes blob-stretch {
+  0%, 100% { transform: scale(1, 1); }
+  17%      { transform: scale(1.13, 0.89); }
+  31%      { transform: scale(0.88, 1.06); }
+  46%      { transform: scale(1.05, 1.1); }
+  59%      { transform: scale(0.85, 0.96); }
+  73%      { transform: scale(1.12, 0.92); }
+  86%      { transform: scale(0.94, 1.14); }
+}
+
+/* Each radial layer drifts across the full 0–100% range, so layers sweep
+   completely past one another — a given colour core can dominate the blob one
+   moment and slide entirely out the next, swapping which hues are visible.
+   Four stops widen the travel. One position per colour layer (8). */
+@keyframes gradient-drift {
+  0%, 100% { background-position:  2%  8%, 60%  0%, 98% 24%,  8% 70%, 70% 96%, 96% 64%, 30% 98%,  0% 36%; }
+  25%      { background-position: 74% 60%, 10% 88%, 30%  4%, 92% 18%, 14% 12%, 22% 96%, 84% 52%, 96% 90%; }
+  50%      { background-position: 24% 96%, 96% 36%,  4% 92%, 50%  6%, 98% 44%, 10% 14%, 56% 30%, 48%  0%; }
+  75%      { background-position: 96% 30%, 34% 50%, 70% 70%,  6% 40%, 40% 90%, 64% 96%,  8% 64%, 70% 22%; }
+}
+
+/* Cycle the whole palette through the spectrum, on its own period so it drifts
+   out of phase with the position drift — the visible colours shift drastically
+   rather than just rearranging the same few hues. */
+@keyframes blob-hue {
+  from { filter: hue-rotate(0deg); }
+  to   { filter: hue-rotate(360deg); }
 }
 
 /* Supply chain inter-column packet animation */

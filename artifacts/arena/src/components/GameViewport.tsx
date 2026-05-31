@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useGameState } from "@/hooks/useGameState";
 import { useSocket } from "@/hooks/useSocket";
 import ManufacturingView from "@/components/ManufacturingView";
+import ManufacturingV3View from "@/components/ManufacturingV3View";
 import SupplyChainView from "@/components/SupplyChainView";
 import type { GameAgent } from "@/context/SocketContext";
 
@@ -392,6 +393,14 @@ export default function GameViewport() {
     return (
       <div className="w-full h-full bg-transparent" data-testid="manufacturing-view">
         <ManufacturingView gameState={legacyGameState as import("@/context/SocketContext").GameState} />
+      </div>
+    );
+  }
+
+  if (gameState && gameState.scenario === "manufacturing_v3") {
+    return (
+      <div className="w-full h-full bg-transparent" data-testid="manufacturing-v3-viewport">
+        <ManufacturingV3View gameState={gameState} />
       </div>
     );
   }

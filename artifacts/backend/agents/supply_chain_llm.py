@@ -1,7 +1,7 @@
 """
 Supply Chain v2 LLM layers (spec §3 Edge Agents + §4 Meta-Optimizer / Director).
 
-Two async entry points, each making a real OpenAI call and returning a parsed,
+Two async entry points, each making a real Anthropic call and returning a parsed,
 validated decision — or raising a ValidationError when the output violates
 the Pydantic schema.
 """
@@ -9,19 +9,31 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 from pydantic import BaseModel, Field, root_validator, parse_obj_as
 
 log = logging.getLogger(__name__)
 
-EDGE_MODEL = "gpt-4o-mini"
-DIRECTOR_MODEL = "gpt-4o-mini"
+# Cheap, fast Anthropic model — analog of the gpt-4o-mini we used previously.
+EDGE_MODEL = os.environ.get("SUPPLY_CHAIN_LLM_MODEL", "claude-haiku-4-5")
+DIRECTOR_MODEL = os.environ.get("SUPPLY_CHAIN_LLM_MODEL", "claude-haiku-4-5")
 
 
 def _client():
-    # Reuse the shared OpenAI client wiring
-    from agents.meta_optimizer import _get_client
-    return _get_client()
+    # Reuse the shared Anthropic client wiring
+    from agents.meta_optimizer import _get_anthropic_client
+    return _get_anthropic_client()
+
+
+def _anthropic_text(response) -> str:
+    """Concatenate all text blocks from an Anthropic messages response."""
+    parts = []
+    for block in response.content:
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
 
 
 def _strip_fences(raw: str) -> str:
@@ -30,6 +42,42 @@ def _strip_fences(raw: str) -> str:
         lines = raw.split("\n")
         raw = "\n".join(lines[1:]).rstrip("`").strip()
     return raw
+
+
+def _extract_json_values(raw: str) -> list:
+    """Tolerantly pull every top-level JSON value out of an LLM response.
+
+    Bare ``json.loads`` raises "Extra data" whenever the model emits anything
+    after the first JSON value — trailing prose ("these actions will…") or
+    several concatenated objects instead of one array. We instead locate the
+    first ``{``/``[`` and walk the string with ``raw_decode``, which parses one
+    value and reports where it ended, so trailing junk between/after values is
+    skipped rather than fatal.
+    """
+    raw = _strip_fences(raw)
+    start = next((i for i, ch in enumerate(raw) if ch in "[{"), -1)
+    if start == -1:
+        raise ValueError(f"no JSON object/array found in response: {raw!r}")
+
+    decoder = json.JSONDecoder()
+    values: list = []
+    idx = start
+    n = len(raw)
+    while idx < n:
+        # Skip whitespace and any stray separators between values.
+        while idx < n and raw[idx] in " \t\r\n,":
+            idx += 1
+        if idx >= n or raw[idx] not in "[{":
+            break
+        try:
+            value, end = decoder.raw_decode(raw, idx)
+        except json.JSONDecodeError:
+            break
+        values.append(value)
+        idx = end
+    if not values:
+        raise ValueError(f"no parseable JSON in response: {raw!r}")
+    return values
 
 
 # ── Pydantic Models for Edge Agent (Spec §3.2) ──────────────────────────────
@@ -180,16 +228,16 @@ async def resolve_edge_exception(ctx: dict) -> Optional[dict]:
             trait_risk=ctx.get("risk", "Medium"),
             trait_greed=ctx.get("greed", "Medium"),
         )
-        resp = await client.chat.completions.create(
+        resp = await client.messages.create(
             model=EDGE_MODEL,
-            max_completion_tokens=200,
+            max_tokens=200,
+            system=system,
             messages=[
-                {"role": "system", "content": system},
                 {"role": "user", "content": _edge_user_prompt(ctx)},
             ],
         )
-        raw = _strip_fences(resp.choices[0].message.content or "")
-        parsed_json = json.loads(raw)
+        # Edge agents must pick exactly one tool; take the first JSON object.
+        parsed_json = _extract_json_values(_anthropic_text(resp))[0]
         validated = EdgeDecision.parse_obj(parsed_json)
         return validated.dict(exclude_none=True)
     except Exception as exc:
@@ -258,17 +306,23 @@ async def run_director(digest: dict) -> Optional[list[dict]]:
     """Return a validated list of director tool calls, or None on failure."""
     try:
         client = _client()
-        resp = await client.chat.completions.create(
+        resp = await client.messages.create(
             model=DIRECTOR_MODEL,
-            max_completion_tokens=400,
+            max_tokens=400,
+            system=_DIRECTOR_SYSTEM,
             messages=[
-                {"role": "system", "content": _DIRECTOR_SYSTEM},
                 {"role": "user", "content": _director_user_prompt(digest)},
             ],
         )
-        raw = _strip_fences(resp.choices[0].message.content or "")
-        parsed_json = json.loads(raw)
-        validated_list = parse_obj_as(list[DirectorAction], parsed_json)
+        # The director may emit one array, or several bare objects (one per
+        # tool call). Flatten whatever we got into a single action list.
+        actions: list = []
+        for value in _extract_json_values(_anthropic_text(resp)):
+            if isinstance(value, list):
+                actions.extend(value)
+            else:
+                actions.append(value)
+        validated_list = parse_obj_as(list[DirectorAction], actions)
         return [v.dict(exclude_none=True) for v in validated_list]
     except Exception as exc:
         log.warning("director LLM failed or validation error (%s)", exc)

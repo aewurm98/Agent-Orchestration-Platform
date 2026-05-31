@@ -4,6 +4,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Arena from "@/pages/Arena";
+import Reference from "@/pages/Reference";
+import Landing from "@/pages/Landing";
 import { SocketProvider } from "@/context/SocketContext";
 
 const queryClient = new QueryClient();
@@ -11,7 +13,10 @@ const queryClient = new QueryClient();
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={Arena} />
+      {/* Landing is the default; the Arena lives at /arena. */}
+      <Route path="/" component={Landing} />
+      <Route path="/arena" component={Arena} />
+      <Route path="/docs" component={Reference} />
       <Route component={NotFound} />
     </Switch>
   );

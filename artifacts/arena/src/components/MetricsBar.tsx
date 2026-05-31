@@ -1,6 +1,21 @@
 import { useSocket } from "@/hooks/useSocket";
 import { Progress } from "@/components/ui/progress";
 
+// Friendly display names for the raw scenario keys the backend emits. The
+// manufacturing flow-graph env is keyed "manufacturing_v3" internally, but it is
+// THE manufacturing scenario now — never surface the "v3" to the user.
+const SCENARIO_LABELS: Record<string, string> = {
+  manufacturing_v3: "Manufacturing",
+  manufacturing: "Manufacturing",
+  supply_chain: "Supply Chain",
+  disaster_relief: "Disaster Relief",
+  peer_agents: "Peer Agents",
+};
+
+function scenarioLabel(s: string): string {
+  return SCENARIO_LABELS[s] ?? s.replace(/_/g, " ").replace(/\bv\d+\b/gi, "").trim();
+}
+
 export default function MetricsBar() {
   const { evolutionData, gameState, mfgState, socket } = useSocket();
 
@@ -13,7 +28,8 @@ export default function MetricsBar() {
   const fitnessDelta = bestFitness - prevBest;
   const mutationType = latestFitness?.mutation_type ?? null;
   const tick = mfgState?.tick ?? gameState?.tick ?? 0;
-  const scenario = mfgState?.scenario ?? gameState?.scenario ?? "None";
+  const rawScenario = mfgState?.scenario ?? gameState?.scenario ?? "None";
+  const scenario = rawScenario === "None" ? "None" : scenarioLabel(rawScenario);
 
   const socketId = socket?.id ?? "";
   const runLabel = socketId
@@ -22,22 +38,31 @@ export default function MetricsBar() {
 
   return (
     <div className="w-full h-full flex flex-col px-6 py-5 gap-5" data-testid="container-metrics-bar">
-      <div className="flex justify-between items-center">
-        <h3 className="text-[11px] font-semibold text-[#6b6359] uppercase tracking-[0.18em]">Live Metrics</h3>
-        <div className="flex gap-1.5 flex-wrap justify-end">
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-[#efe9d9] text-[#6b6359]">
-            Tick · {tick}
+      <div className="flex justify-between items-center gap-4">
+        <h3 className="text-[11px] font-semibold text-[#6b6359] uppercase tracking-[0.18em] shrink-0">Live Metrics</h3>
+        <div className="flex items-center gap-x-3 gap-y-0.5 flex-wrap justify-end text-[10px] font-mono text-[#6b6359]">
+          <span className="flex items-center gap-1">
+            <span className="text-[#9b9285] uppercase tracking-wider">Tick</span>
+            <span className="text-[#14120e] tabular-nums">{tick}</span>
           </span>
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-white text-[#14120e]">
-            {scenario}
+          <span className="text-[#d8cdb4]" aria-hidden="true">·</span>
+          <span className="flex items-center gap-1">
+            <span className="text-[#9b9285] uppercase tracking-wider">Scenario</span>
+            <span className="text-[#14120e]">{scenario}</span>
           </span>
           {mutationType && (
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border border-[#ebe5d6] bg-white text-[#6b6359]">
-              {mutationType}
-            </span>
+            <>
+              <span className="text-[#d8cdb4]" aria-hidden="true">·</span>
+              <span className="flex items-center gap-1">
+                <span className="text-[#9b9285] uppercase tracking-wider">Mode</span>
+                <span className="text-[#14120e]">{mutationType}</span>
+              </span>
+            </>
           )}
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-medium tile-dark">
-            {runLabel}
+          <span className="text-[#d8cdb4]" aria-hidden="true">·</span>
+          <span className="flex items-center gap-1">
+            <span className="text-[#9b9285] uppercase tracking-wider">Run</span>
+            <span className="text-[#14120e] tabular-nums">{runLabel}</span>
           </span>
         </div>
       </div>

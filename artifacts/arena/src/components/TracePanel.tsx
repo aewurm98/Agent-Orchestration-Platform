@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 
 const ROLE_COLORS: Record<string, string> = {
   orchestrator:           "#14120e",
+  executive:              "#14120e",
+  director:               "#14120e",
   evaluator:              "#b45309",
   supply_agent:           "#15803d",
   demand_agent:           "#15803d",
@@ -29,12 +31,15 @@ const FILTERS: FilterKey[] = ["All", "Orchestrator", "Evaluator", "Game Agents",
 function matchesFilter(role: string, filter: FilterKey): boolean {
   if (filter === "All") return true;
   const r = role.toLowerCase();
+  // Scenario orchestrators go by different names (the factory's "executive",
+  // the supply-chain "director") — all belong under the Orchestrator filter.
+  const isOrchestrator = r === "orchestrator" || r === "executive" || r === "director";
   switch (filter) {
-    case "Orchestrator": return r === "orchestrator";
+    case "Orchestrator": return isOrchestrator;
     case "Evaluator":    return r === "evaluator";
     case "System":       return r === "system";
     case "Game Agents":
-      return !["orchestrator", "evaluator", "system"].includes(r);
+      return !isOrchestrator && r !== "evaluator" && r !== "system";
   }
 }
 

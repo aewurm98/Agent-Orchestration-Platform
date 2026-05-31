@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { GameState, SCNode, SCTruck, SupplyChainV2State } from "@/context/SocketContext";
 
 /**
@@ -84,13 +85,34 @@ function GridBoard({ sc }: { sc: SupplyChainV2State }) {
     (trucksAt.get(k) ?? trucksAt.set(k, []).get(k)!).push(t);
   });
 
+  // Size the grid as the largest square that fits inside its container —
+  // otherwise aspect-square + w-full overflows vertically and clips the
+  // bottom rows on wider-than-tall layouts.
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [side, setSide] = useState(0);
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSide(Math.floor(Math.min(width, height)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <div className="rounded-2xl border border-[#ebe5d6] bg-white p-2 min-h-0 overflow-hidden flex items-center justify-center">
+    <div
+      ref={wrapperRef}
+      className="rounded-2xl border border-[#ebe5d6] bg-white p-2 min-h-0 min-w-0 overflow-hidden flex items-center justify-center"
+    >
       <div
-        className="grid gap-px w-full aspect-square mx-auto"
-        style={{ 
+        className="grid gap-px"
+        style={{
+          width: side || "100%",
+          height: side || "100%",
           gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${size}, minmax(0, 1fr))`
+          gridTemplateRows: `repeat(${size}, minmax(0, 1fr))`,
         }}
       >
         {Array.from({ length: size }).map((_, y) =>
